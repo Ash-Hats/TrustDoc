@@ -7,7 +7,6 @@ import {
   useMemo,
   useState,
 } from "react";
-import { ethers } from "ethers";
 import {
   clearAuthSessionStorage,
   getAuthSessionStorage,
@@ -31,6 +30,7 @@ import {
   updateCurrentUser,
   upsertProfile,
 } from "../services/supabaseService";
+import { getConnectedWallet, getWalletSigner } from "../utils/contract";
 
 const AuthContext = createContext(null);
 const WALLET_EMAIL_DOMAIN = "wallet.trustdoc.app";
@@ -91,14 +91,8 @@ async function deriveWalletCredential(signature, walletAddress) {
 }
 
 async function requestWalletSignature() {
-  if (!window?.ethereum) {
-    throw new Error("MetaMask is required for wallet sign-in.");
-  }
-
-  const provider = new ethers.BrowserProvider(window.ethereum);
-  await provider.send("eth_requestAccounts", []);
-
-  const signer = await provider.getSigner();
+  await getConnectedWallet({ requestIfMissing: true });
+  const signer = await getWalletSigner();
   const address = (await signer.getAddress()).toLowerCase();
   const nonce =
     typeof crypto?.randomUUID === "function"

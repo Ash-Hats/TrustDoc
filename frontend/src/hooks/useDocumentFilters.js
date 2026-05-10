@@ -48,14 +48,19 @@ export function useDocumentFilters() {
   const { user } = useAuth();
   const scopeKey = user?.id || "public";
   const [searchParams, setSearchParams] = useSearchParams();
+  const searchKey = searchParams.toString();
+  const stableSearchParams = useMemo(
+    () => new URLSearchParams(searchKey),
+    [searchKey]
+  );
 
   const filters = useMemo(
-    () => readFiltersFromSearchParams(searchParams),
-    [searchParams]
+    () => readFiltersFromSearchParams(stableSearchParams),
+    [stableSearchParams]
   );
 
   useEffect(() => {
-    if (hasKnownFilterParams(searchParams)) {
+    if (hasKnownFilterParams(stableSearchParams)) {
       return;
     }
 
@@ -64,12 +69,12 @@ export function useDocumentFilters() {
       return;
     }
 
-    const next = buildSearchParams(searchParams, stored);
-    if (next.toString() === searchParams.toString()) {
+    const next = buildSearchParams(stableSearchParams, stored);
+    if (next.toString() === searchKey) {
       return;
     }
     setSearchParams(next, { replace: true });
-  }, [scopeKey, searchParams, setSearchParams]);
+  }, [scopeKey, searchKey, setSearchParams, stableSearchParams]);
 
   useEffect(() => {
     setFilterStorage(filters, scopeKey);
@@ -86,35 +91,35 @@ export function useDocumentFilters() {
         next.page = 1;
       }
 
-      const params = buildSearchParams(searchParams, next);
+      const params = buildSearchParams(stableSearchParams, next);
       setSearchParams(params, { replace });
     },
-    [filters, searchParams, setSearchParams]
+    [filters, setSearchParams, stableSearchParams]
   );
 
   const setPage = useCallback(
     (page) => {
-      const params = buildSearchParams(searchParams, { ...filters, page });
+      const params = buildSearchParams(stableSearchParams, { ...filters, page });
       setSearchParams(params, { replace: true });
     },
-    [filters, searchParams, setSearchParams]
+    [filters, setSearchParams, stableSearchParams]
   );
 
   const resetFilters = useCallback(() => {
-    const params = buildSearchParams(searchParams, DEFAULT_DOCUMENT_FILTERS);
+    const params = buildSearchParams(stableSearchParams, DEFAULT_DOCUMENT_FILTERS);
     setSearchParams(params, { replace: true });
-  }, [searchParams, setSearchParams]);
+  }, [setSearchParams, stableSearchParams]);
 
   const buildQueryString = useCallback(
     (nextFilters) => {
-      const params = buildSearchParams(searchParams, {
+      const params = buildSearchParams(stableSearchParams, {
         ...filters,
         ...nextFilters,
       });
       const serialized = params.toString();
       return serialized ? `?${serialized}` : "";
     },
-    [filters, searchParams]
+    [filters, stableSearchParams]
   );
 
   return {

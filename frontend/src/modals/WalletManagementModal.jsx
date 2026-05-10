@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Wallet, X, Plus, Trash2, Check, AlertCircle } from "lucide-react";
 import toast from "react-hot-toast";
 import { useAuth } from "../context/AuthContext";
@@ -11,7 +11,14 @@ import {
 import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
 import { shortAddress } from "../utils/format";
-import { ethers } from "ethers";
+import {
+  AMOY_CHAIN_ID_DEC,
+  AMOY_CHAIN_NAME,
+  getConnectedWallet,
+  getWalletChainId,
+  getWalletSigner,
+  isAmoyChain,
+} from "../utils/contract";
 
 function WalletManagementModal({ isOpen, onClose }) {
   const { user, session } = useAuth();
@@ -19,7 +26,7 @@ function WalletManagementModal({ isOpen, onClose }) {
   const [loading, setLoading] = useState(false);
   const [connecting, setConnecting] = useState(false);
 
-  const fetchWallets = async () => {
+  const fetchWallets = useCallback(async () => {
     if (!session?.accessToken || !user?.id) return;
 
     try {
@@ -28,31 +35,21 @@ function WalletManagementModal({ isOpen, onClose }) {
     } catch (error) {
       console.error("Failed to fetch wallets:", error);
     }
-  };
+  }, [session, user]);
 
   useEffect(() => {
     if (isOpen) {
-      fetchWallets();
+      void fetchWallets();
     }
-  }, [isOpen, session]);
+  }, [fetchWallets, isOpen]);
 
   const handleConnectWallet = async () => {
-    if (!window.ethereum) {
-      toast.error("MetaMask is required to connect a wallet");
-      return;
-    }
-
     setConnecting(true);
     try {
-      const accounts = await window.ethereum.request({
-        method: "eth_requestAccounts",
-      });
-
-      if (!accounts.length) {
+      const walletAddress = (await getConnectedWallet({ requestIfMissing: true })).toLowerCase();
+      if (!walletAddress) {
         throw new Error("No account selected");
       }
-
-      const walletAddress = accounts[0].toLowerCase();
 
       // Check if already connected
       if (wallets.some((w) => w.wallet_address.toLowerCase() === walletAddress)) {
@@ -61,9 +58,13 @@ function WalletManagementModal({ isOpen, onClose }) {
         return;
       }
 
+      const activeChainId = await getWalletChainId();
+      if (!isAmoyChain(activeChainId)) {
+        throw new Error(`Please switch wallet to ${AMOY_CHAIN_NAME} before connecting.`);
+      }
+
       // Sign message for verification
-      const provider = new ethers.BrowserProvider(window.ethereum);
-      const signer = await provider.getSigner();
+      const signer = await getWalletSigner();
 
       const message = [
         "TrustDoc Wallet Connection",
@@ -78,7 +79,7 @@ function WalletManagementModal({ isOpen, onClose }) {
       if (session?.accessToken) {
         await createWalletSession(session.accessToken, user.id, {
           wallet_address: walletAddress,
-          chain_id: 80002,
+          chain_id: AMOY_CHAIN_ID_DEC,
           signature,
           message,
         });

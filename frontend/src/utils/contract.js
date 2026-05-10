@@ -8,6 +8,9 @@ const AMOY_RPC_FALLBACKS = import.meta.env.VITE_AMOY_RPC_FALLBACKS
   .filter(Boolean);
 const PINATA_GATEWAY = import.meta.env.VITE_PINATA_GATEWAY?.trim();
 const AUTO_CONNECT_GUARD_KEY = "__trustdoc_auto_connect_once__";
+const DEBUG_BLOCKCHAIN =
+  Boolean(import.meta.env.DEV) ||
+  String(import.meta.env.VITE_DEBUG || "").toLowerCase() === "true";
 
 export const AMOY_CHAIN_ID_DEC = 80002;
 export const AMOY_CHAIN_ID_HEX = "0x13882";
@@ -18,6 +21,11 @@ const DEFAULT_AMOY_RPCS = ["https://rpc-amoy.polygon.technology"];
 const READ_RPC_URLS = Array.from(
   new Set([AMOY_RPC_URL, ...(AMOY_RPC_FALLBACKS || []), ...DEFAULT_AMOY_RPCS].filter(Boolean))
 );
+
+const READ_PROVIDER_POLL_INTERVAL_MS = 4000;
+const DOCUMENT_EVENT_POLL_INTERVAL_MS = 15000;
+const DOCUMENT_EVENT_BOOTSTRAP_LOOKBACK_BLOCKS = 6;
+const DOCUMENT_EVENT_QUERY_STEP = 3500;
 
 const DEFAULT_GAS_OVERRIDES = {
   gasLimit: 500000n,
@@ -38,6 +46,35 @@ const ABI = [
   "event DocumentRegistered(bytes32 indexed hash, address indexed owner, uint256 timestamp, string docType)",
   "event DocumentRevoked(bytes32 indexed hash, address indexed owner)",
 ];
+
+const readProviderCache = new Map();
+const contractExistsCache = new WeakMap();
+const walletRequestCache = new Map();
+const registrationDetailsCache = new Map();
+let browserProviderSingleton = null;
+let browserProviderSource = null;
+
+function logDebug(...args) {
+  if (DEBUG_BLOCKCHAIN) {
+    console.debug("[trustdoc:blockchain]", ...args);
+  }
+}
+
+function logWarn(...args) {
+  console.warn("[trustdoc:blockchain]", ...args);
+}
+
+function getBrowserWindow() {
+  return typeof window === "undefined" ? null : window;
+}
+
+function getInjectedEthereum() {
+  const browserWindow = getBrowserWindow();
+  if (!browserWindow?.ethereum?.request) {
+    throw new Error("MetaMask is not installed. Please install MetaMask and try again.");
+  }
+  return browserWindow.ethereum;
+}
 
 function normalizeHash(hash) {
   if (typeof hash !== "string") {
@@ -156,16 +193,65 @@ function buildGatewayUrl(cid) {
   return `${PINATA_GATEWAY.replace(/\/+$/, "")}/ipfs/${cid}`;
 }
 
-function getBrowserProvider() {
-  if (!window?.ethereum) {
-    throw new Error("MetaMask is not installed. Please install MetaMask and try again.");
+function getWalletRequestKey(method, params) {
+  return `${method}:${JSON.stringify(params || [])}`;
+}
+
+export async function requestWalletRpc(method, params = []) {
+  const ethereum = getInjectedEthereum();
+  const normalizedParams = Array.isArray(params) ? params : [params];
+  const requestKey = getWalletRequestKey(method, normalizedParams);
+
+  if (walletRequestCache.has(requestKey)) {
+    return walletRequestCache.get(requestKey);
   }
 
-  return new ethers.BrowserProvider(window.ethereum);
+  const requestPromise = ethereum
+    .request({ method, params: normalizedParams })
+    .catch((error) => {
+      throw error;
+    })
+    .finally(() => {
+      walletRequestCache.delete(requestKey);
+    });
+
+  walletRequestCache.set(requestKey, requestPromise);
+  return requestPromise;
+}
+
+export function getBrowserProvider() {
+  const browserWindow = getBrowserWindow();
+  const ethereum = getInjectedEthereum();
+
+  if (!browserProviderSingleton || browserProviderSource !== ethereum) {
+    browserProviderSingleton = new ethers.BrowserProvider(ethereum);
+    browserProviderSource = ethereum;
+    logDebug("Created BrowserProvider singleton.", { hasWindow: Boolean(browserWindow) });
+  }
+
+  return browserProviderSingleton;
+}
+
+export async function getWalletSigner() {
+  const provider = getBrowserProvider();
+  return provider.getSigner();
 }
 
 function getReadProviders() {
-  return READ_RPC_URLS.map((url) => new ethers.JsonRpcProvider(url));
+  return READ_RPC_URLS.map((url) => {
+    if (!readProviderCache.has(url)) {
+      const provider = new ethers.JsonRpcProvider(url, undefined, {
+        polling: true,
+        pollingInterval: READ_PROVIDER_POLL_INTERVAL_MS,
+        staticNetwork: true,
+      });
+
+      readProviderCache.set(url, provider);
+      logDebug("Initialized read provider.", { rpcUrl: url });
+    }
+
+    return readProviderCache.get(url);
+  });
 }
 
 async function withReadProviderFallback(executor) {
@@ -175,7 +261,6 @@ async function withReadProviderFallback(executor) {
   for (const provider of providers) {
     try {
       const network = await provider.getNetwork();
-
       if (!isAmoyChain(network.chainId)) {
         continue;
       }
@@ -196,19 +281,43 @@ async function withReadProviderFallback(executor) {
 }
 
 async function assertContractExists(provider) {
-  const code = await provider.getCode(CONTRACT_ADDRESS);
+  const cached = contractExistsCache.get(provider);
+  if (cached) {
+    return cached;
+  }
 
-  if (!code || code === "0x") {
-    throw new Error("Contract not deployed at VITE_CONTRACT_ADDRESS on Polygon Amoy.");
+  const validation = (async () => {
+    const code = await provider.getCode(CONTRACT_ADDRESS);
+    if (!code || code === "0x") {
+      throw new Error("Contract not deployed at VITE_CONTRACT_ADDRESS on Polygon Amoy.");
+    }
+    return true;
+  })();
+
+  contractExistsCache.set(provider, validation);
+
+  try {
+    return await validation;
+  } catch (error) {
+    contractExistsCache.delete(provider);
+    throw error;
   }
 }
 
 export async function getWalletChainId() {
-  if (!window?.ethereum) {
+  const browserWindow = getBrowserWindow();
+  if (!browserWindow?.ethereum?.request) {
     return "";
   }
 
-  return window.ethereum.request({ method: "eth_chainId" });
+  try {
+    return await requestWalletRpc("eth_chainId", []);
+  } catch (error) {
+    logWarn("Failed to read wallet chain id.", error);
+    throw new Error(extractErrorMessage(error, "Unable to read wallet chain id."), {
+      cause: error,
+    });
+  }
 }
 
 function getAmoyNetworkParams() {
@@ -262,25 +371,17 @@ export function getManualNetworkSwitchUrl() {
 }
 
 export async function switchToAmoyNetwork() {
-  if (!window?.ethereum) {
-    throw new Error("MetaMask is not installed.");
-  }
+  getInjectedEthereum();
 
   try {
-    await window.ethereum.request({
-      method: "wallet_switchEthereumChain",
-      params: [{ chainId: AMOY_CHAIN_ID_HEX }],
-    });
+    await requestWalletRpc("wallet_switchEthereumChain", [{ chainId: AMOY_CHAIN_ID_HEX }]);
   } catch (switchError) {
     if (switchError?.code !== 4902) {
       throw new Error(explainNetworkSwitchFailure(switchError), { cause: switchError });
     }
 
     try {
-      await window.ethereum.request({
-        method: "wallet_addEthereumChain",
-        params: [getAmoyNetworkParams()],
-      });
+      await requestWalletRpc("wallet_addEthereumChain", [getAmoyNetworkParams()]);
     } catch (addError) {
       throw new Error(explainNetworkSwitchFailure(addError), { cause: addError });
     }
@@ -326,30 +427,31 @@ export async function ensureAmoyNetwork({ autoSwitch = true } = {}) {
 }
 
 export async function getConnectedWallet({ requestIfMissing = false } = {}) {
-  if (!window?.ethereum) {
+  const browserWindow = getBrowserWindow();
+  if (!browserWindow?.ethereum?.request) {
     return "";
   }
 
-  const provider = getBrowserProvider();
-  let accounts = await provider.send("eth_accounts", []);
+  let accounts = await requestWalletRpc("eth_accounts", []);
 
   if (!accounts.length && requestIfMissing) {
-    accounts = await provider.send("eth_requestAccounts", []);
+    accounts = await requestWalletRpc("eth_requestAccounts", []);
   }
 
   return accounts[0] || "";
 }
 
 export async function autoConnectWalletOnce({ requestIfMissing = false } = {}) {
-  if (!window?.ethereum) {
+  const browserWindow = getBrowserWindow();
+  if (!browserWindow?.ethereum?.request) {
     return "";
   }
 
-  if (window[AUTO_CONNECT_GUARD_KEY]) {
+  if (browserWindow[AUTO_CONNECT_GUARD_KEY]) {
     return getConnectedWallet({ requestIfMissing: false });
   }
 
-  window[AUTO_CONNECT_GUARD_KEY] = true;
+  browserWindow[AUTO_CONNECT_GUARD_KEY] = true;
 
   try {
     return await getConnectedWallet({ requestIfMissing });
@@ -362,14 +464,18 @@ async function getWriteContract({ enforceNetwork = true } = {}) {
   validateSharedConfig();
 
   const provider = getBrowserProvider();
-  const connected = await provider.send("eth_accounts", []);
+  let connected = await requestWalletRpc("eth_accounts", []);
 
   if (!connected.length) {
-    await provider.send("eth_requestAccounts", []);
+    connected = await requestWalletRpc("eth_requestAccounts", []);
+  }
+
+  if (!connected.length) {
+    throw new Error("No wallet account available.");
   }
 
   if (enforceNetwork) {
-    const chainId = await provider.send("eth_chainId", []);
+    const chainId = await getWalletChainId();
 
     if (!isAmoyChain(chainId)) {
       throw new Error("Please switch MetaMask to Polygon Amoy.");
@@ -401,9 +507,17 @@ function getRegisterArgs({ hashHex, cid, docType, issuedBy }) {
 }
 
 async function resolveRegistrationDetails(contract, provider, normalizedHash) {
+  const cacheKey = String(normalizedHash || "").toLowerCase();
+  if (registrationDetailsCache.has(cacheKey)) {
+    return registrationDetailsCache.get(cacheKey);
+  }
+
+  const pendingResolution = (async () => {
   try {
     const filter = contract.filters.DocumentRegistered(normalizedHash);
-    const logs = await contract.queryFilter(filter, 0, "latest");
+    const latestBlock = await provider.getBlockNumber();
+    const fromBlock = Math.max(0, latestBlock - 200000);
+    const logs = await contract.queryFilter(filter, fromBlock, latestBlock);
 
     if (!logs.length) {
       return {
@@ -465,6 +579,10 @@ async function resolveRegistrationDetails(contract, provider, normalizedHash) {
       gasUsed: null,
     };
   }
+  })();
+
+  registrationDetailsCache.set(cacheKey, pendingResolution);
+  return pendingResolution;
 }
 
 async function verifyDocumentWithContext(contract, provider, hashHex) {
@@ -555,37 +673,106 @@ export async function getRecentDocumentEvents({ fromBlock = 0, toBlock = "latest
   });
 }
 
-export function subscribeToDocumentEvents({ onRegistered, onRevoked } = {}) {
+function mapRegisteredEvent(log) {
+  return {
+    hash: log?.args?.[0] || log?.args?.hash || "",
+    owner: log?.args?.[1] || log?.args?.owner || "",
+    timestamp: Number(log?.args?.[2] || log?.args?.timestamp || 0),
+    docType: log?.args?.[3] || log?.args?.docType || "General",
+    txHash: log?.transactionHash || "",
+    blockNumber: Number(log?.blockNumber || 0),
+  };
+}
+
+function mapRevokedEvent(log) {
+  return {
+    hash: log?.args?.[0] || log?.args?.hash || "",
+    owner: log?.args?.[1] || log?.args?.owner || "",
+    txHash: log?.transactionHash || "",
+    blockNumber: Number(log?.blockNumber || 0),
+  };
+}
+
+export function subscribeToDocumentEvents({
+  onRegistered,
+  onRevoked,
+  pollIntervalMs = DOCUMENT_EVENT_POLL_INTERVAL_MS,
+} = {}) {
   validateReadConfig();
 
-  const provider = getReadProviders()[0];
-  const contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, provider);
+  let stopped = false;
+  let timerRef = null;
+  let isPolling = false;
+  let lastBlock = null;
 
-  const registeredHandler = (hash, owner, timestamp, docType, event) => {
-    onRegistered?.({
-      hash,
-      owner,
-      timestamp: Number(timestamp),
-      docType,
-      txHash: event?.log?.transactionHash || event?.transactionHash || "",
-    });
+  const scheduleNext = () => {
+    if (stopped) {
+      return;
+    }
+
+    timerRef = setTimeout(() => {
+      void poll();
+    }, pollIntervalMs);
   };
 
-  const revokedHandler = (hash, owner, event) => {
-    onRevoked?.({
-      hash,
-      owner,
-      txHash: event?.log?.transactionHash || event?.transactionHash || "",
-    });
+  const poll = async () => {
+    if (stopped || isPolling) {
+      return;
+    }
+
+    isPolling = true;
+
+    try {
+      await withReadProviderFallback(async (provider) => {
+        const contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, provider);
+        const latestBlock = await provider.getBlockNumber();
+
+        const startBlock =
+          typeof lastBlock === "number"
+            ? Math.max(0, lastBlock + 1)
+            : Math.max(0, latestBlock - DOCUMENT_EVENT_BOOTSTRAP_LOOKBACK_BLOCKS);
+
+        if (startBlock > latestBlock) {
+          lastBlock = latestBlock;
+          return;
+        }
+
+        let cursor = startBlock;
+        while (cursor <= latestBlock) {
+          const batchEnd = Math.min(cursor + DOCUMENT_EVENT_QUERY_STEP - 1, latestBlock);
+          const [registered, revoked] = await Promise.all([
+            contract.queryFilter(contract.filters.DocumentRegistered(), cursor, batchEnd),
+            contract.queryFilter(contract.filters.DocumentRevoked(), cursor, batchEnd),
+          ]);
+
+          for (const eventLog of registered) {
+            onRegistered?.(mapRegisteredEvent(eventLog));
+          }
+
+          for (const eventLog of revoked) {
+            onRevoked?.(mapRevokedEvent(eventLog));
+          }
+
+          cursor = batchEnd + 1;
+        }
+
+        lastBlock = latestBlock;
+      });
+    } catch (error) {
+      logWarn("Document event polling failed.", error);
+    } finally {
+      isPolling = false;
+      scheduleNext();
+    }
   };
 
-  contract.on("DocumentRegistered", registeredHandler);
-  contract.on("DocumentRevoked", revokedHandler);
+  void poll();
 
   return () => {
-    contract.off("DocumentRegistered", registeredHandler);
-    contract.off("DocumentRevoked", revokedHandler);
-    provider.destroy?.();
+    stopped = true;
+    if (timerRef) {
+      clearTimeout(timerRef);
+    }
   };
 }
 
@@ -640,6 +827,7 @@ export async function registerDocumentOnChain({
 
   try {
     const tx = await contract.registerDocument(...args, initialOverrides);
+    logDebug("Submitted registerDocument transaction.", { hash: tx.hash });
 
     return {
       txHash: tx.hash,
@@ -664,6 +852,7 @@ export async function registerDocumentOnChain({
       };
 
       const retryTx = await contract.registerDocument(...args, retryOverrides);
+      logDebug("Retry transaction submitted.", { hash: retryTx.hash });
 
       return {
         txHash: retryTx.hash,

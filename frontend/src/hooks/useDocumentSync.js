@@ -7,7 +7,13 @@ import { usePollingSubscription } from "./useRealtimeSubscription";
  */
 export function useDocumentSync(userId, onSync) {
   const channelRef = useRef(null);
+  const onSyncRef = useRef(onSync);
+  const syncTimerRef = useRef(null);
   const [isSynced, setIsSynced] = useState(true);
+
+  useEffect(() => {
+    onSyncRef.current = onSync;
+  }, [onSync]);
 
   useEffect(() => {
     // Use BroadcastChannel for cross-tab communication
@@ -18,9 +24,12 @@ export function useDocumentSync(userId, onSync) {
         const handleMessage = (event) => {
           if (event.data.type === "document_sync") {
             setIsSynced(false);
-            onSync?.(event.data.payload);
+            onSyncRef.current?.(event.data.payload);
             // Re-sync after a short delay
-            setTimeout(() => setIsSynced(true), 500);
+            if (syncTimerRef.current) {
+              clearTimeout(syncTimerRef.current);
+            }
+            syncTimerRef.current = setTimeout(() => setIsSynced(true), 500);
           }
         };
 
@@ -31,12 +40,23 @@ export function useDocumentSync(userId, onSync) {
             channelRef.current.removeEventListener("message", handleMessage);
             channelRef.current.close();
           }
+          if (syncTimerRef.current) {
+            clearTimeout(syncTimerRef.current);
+            syncTimerRef.current = null;
+          }
         };
       } catch (error) {
         console.warn("BroadcastChannel not available:", error);
       }
     }
-  }, [userId, onSync]);
+
+    return () => {
+      if (syncTimerRef.current) {
+        clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = null;
+      }
+    };
+  }, [userId]);
 
   const broadcast = useCallback((data) => {
     if (channelRef.current) {
@@ -156,7 +176,7 @@ export function useDocumentPolling(
   } = options;
 
   const cacheRef = useRef(null);
-  const lastFetchRef = useRef(0);
+  const [lastFetch, setLastFetch] = useState(0);
 
   const handleFetch = useCallback(async () => {
     try {
@@ -172,7 +192,7 @@ export function useDocumentPolling(
       onError?.(error);
     }
 
-    lastFetchRef.current = Date.now();
+    setLastFetch(Date.now());
   }, [fetchFn, onSuccess, onError]);
 
   const { isPolling, startPolling, stopPolling } = usePollingSubscription({
@@ -185,6 +205,6 @@ export function useDocumentPolling(
     isPolling,
     startPolling,
     stopPolling,
-    lastFetch: lastFetchRef.current,
+    lastFetch,
   };
 }

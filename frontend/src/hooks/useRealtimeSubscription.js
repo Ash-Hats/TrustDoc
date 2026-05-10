@@ -39,6 +39,12 @@ export function useRealtimeSubscription(config) {
     () => buildChannelName(table, filter, channelName),
     [channelName, filter, table]
   );
+  const setStatusSafe = useCallback((nextStatus) => {
+    setStatus((previous) => (previous === nextStatus ? previous : nextStatus));
+  }, []);
+  const setErrorSafe = useCallback((nextError) => {
+    setError((previous) => (previous === nextError ? previous : nextError));
+  }, []);
 
   useEffect(() => {
     callbackRef.current = onEvent;
@@ -65,8 +71,8 @@ export function useRealtimeSubscription(config) {
 
   useEffect(() => {
     if (!isActive) {
-      setStatus("disabled");
-      setError("");
+      setStatusSafe("disabled");
+      setErrorSafe("");
       void unsubscribe();
       return undefined;
     }
@@ -74,13 +80,13 @@ export function useRealtimeSubscription(config) {
     const client = getRealtimeClient();
 
     if (!client) {
-      setStatus("unavailable");
-      setError("Supabase realtime client is unavailable.");
+      setStatusSafe("unavailable");
+      setErrorSafe("Supabase realtime client is unavailable.");
       return undefined;
     }
 
-    setError("");
-    setStatus("connecting");
+    setErrorSafe("");
+    setStatusSafe("connecting");
     setRealtimeAuthToken(accessToken || "");
 
     const channel = client
@@ -109,12 +115,12 @@ export function useRealtimeSubscription(config) {
         return;
       }
 
-      setStatus(nextStatus);
+      setStatusSafe(nextStatus);
 
       if (nextStatus === "CHANNEL_ERROR" || nextStatus === "TIMED_OUT") {
-        setError("Realtime subscription interrupted. Falling back to polling.");
+        setErrorSafe("Realtime subscription interrupted. Falling back to polling.");
       } else {
-        setError("");
+        setErrorSafe("");
       }
     });
 
@@ -128,6 +134,8 @@ export function useRealtimeSubscription(config) {
     isActive,
     resolvedChannelName,
     schema,
+    setErrorSafe,
+    setStatusSafe,
     table,
     unsubscribe,
   ]);
@@ -240,6 +248,7 @@ export function usePollingSubscription(config) {
   const intervalRef = useRef(null);
   const isPollingRef = useRef(false);
   const mountedRef = useRef(true);
+  const [isPolling, setIsPolling] = useState(false);
   const [lastError, setLastError] = useState("");
   const [lastRunAt, setLastRunAt] = useState(0);
 
@@ -257,6 +266,7 @@ export function usePollingSubscription(config) {
     }
 
     isPollingRef.current = false;
+    setIsPolling(false);
   }, []);
 
   const startPolling = useCallback(async () => {
@@ -265,6 +275,7 @@ export function usePollingSubscription(config) {
     }
 
     isPollingRef.current = true;
+    setIsPolling(true);
 
     const run = async () => {
       try {
@@ -304,7 +315,7 @@ export function usePollingSubscription(config) {
   }, [enabled, startPolling, stopPolling]);
 
   return {
-    isPolling: isPollingRef.current,
+    isPolling,
     startPolling,
     stopPolling,
     lastRunAt,

@@ -26,6 +26,8 @@ import {
   AMOY_CHAIN_NAME,
   explainNetworkSwitchFailure,
   getManualNetworkSwitchUrl,
+  requestWalletRpc,
+  switchToAmoyNetwork,
 } from "../utils/contract";
 
 function Toggle({ checked, onChange }) {
@@ -105,18 +107,10 @@ export default function Settings() {
     : "Unknown";
 
   async function handleWalletPermissions() {
-    if (!window?.ethereum?.request) {
-      toast.error("MetaMask not found.");
-      return;
-    }
-
     setIsRequestingPermissions(true);
 
     try {
-      await window.ethereum.request({
-        method: "wallet_requestPermissions",
-        params: [{ eth_accounts: {} }],
-      });
+      await requestWalletRpc("wallet_requestPermissions", [{ eth_accounts: {} }]);
       toast.success("Wallet permissions updated.");
     } catch (error) {
       const message = error?.message || "Failed to request wallet permissions.";
@@ -148,16 +142,8 @@ export default function Settings() {
   async function handleManualNetworkSwitch() {
     const helpUrl = getManualNetworkSwitchUrl();
 
-    if (!window?.ethereum?.request) {
-      window.open(helpUrl, "_blank", "noopener,noreferrer");
-      return;
-    }
-
     try {
-      await window.ethereum.request({
-        method: "wallet_switchEthereumChain",
-        params: [{ chainId: AMOY_CHAIN_ID_HEX }],
-      });
+      await switchToAmoyNetwork();
       setNetworkHint("");
       toast.success(`${AMOY_CHAIN_NAME} selected in wallet.`);
       await refreshWalletSessions().catch(() => null);

@@ -70,8 +70,62 @@ const DEFAULT_WALLET = {
   isSupportedNetwork: false,
 };
 
-const POLL_INTERVAL_MS = 15000;
+const POLL_INTERVAL_MS = 45000;
 const REALTIME_REFRESH_DEBOUNCE_MS = 450;
+const AUTO_CONNECT_EFFECT_GUARD_KEY = "__trustdoc_app_autoconnect__";
+const AUTO_CONNECT_SCOPE_GUARD_KEY = "__trustdoc_app_autoconnect_scope__";
+const MIN_SILENT_REFRESH_GAP_MS = 1200;
+const LOCAL_DOCUMENT_SYNC_COOLDOWN_MS = 2500;
+
+function rememberSeenEvent(ref, key, maxSize = 400) {
+  if (!ref.current) {
+    ref.current = new Set();
+  }
+
+  if (ref.current.has(key)) {
+    return false;
+  }
+
+  ref.current.add(key);
+
+  if (ref.current.size > maxSize) {
+    const [first] = ref.current;
+    ref.current.delete(first);
+  }
+
+  return true;
+}
+
+function buildDocumentsFingerprint(documents = []) {
+  const normalized = [...documents]
+    .map((item) => {
+      const metadata = item?.metadata || {};
+      return {
+        hash: String(item?.hash || "").toLowerCase(),
+        owner: String(item?.owner || "").toLowerCase(),
+        revoked: Boolean(item?.revoked),
+        timestamp: Number(item?.timestamp || 0),
+        blockTimestamp: Number(item?.blockTimestamp || 0),
+        txHash: String(item?.txHash || "").toLowerCase(),
+        cid: String(item?.cid || ""),
+        docType: String(item?.docType || "General"),
+        issuedBy: String(item?.issuedBy || "Unknown"),
+        privacyLevel: String(item?.privacyLevel || "private"),
+        description: String(item?.description || ""),
+        fileName: String(item?.fileName || ""),
+        fileSize: Number(item?.fileSize || 0),
+        fileType: String(item?.fileType || ""),
+        sharedWithWallets: Array.isArray(item?.sharedWithWallets)
+          ? [...item.sharedWithWallets].map((wallet) => String(wallet || "").toLowerCase()).sort()
+          : [],
+        metaGasUsed: String(metadata.gasUsed || item?.gasUsed || ""),
+        metaBlockNumber: Number(metadata.blockNumber ?? item?.blockNumber ?? 0),
+      };
+    })
+    .sort((a, b) => a.hash.localeCompare(b.hash));
+
+  return JSON.stringify(normalized);
+}
 
 function sessionPayload(account, chainId) {
   return {
@@ -216,15 +270,53 @@ export function AppProvider({ children }) {
   const [activity, setActivity] = useState([]);
   const [walletSessions, setWalletSessions] = useState([]);
   const [showWrongNetworkModal, setShowWrongNetworkModal] = useState(false);
-  const [realtimeStatus, setRealtimeStatus] = useState("disabled");
   const [lastRealtimeEventAt, setLastRealtimeEventAt] = useState(0);
   const [syncError, setSyncError] = useState("");
   const [isSyncRefreshPending, setIsSyncRefreshPending] = useState(false);
   const autoConnectGuard = useRef(false);
+  const connectInFlightRef = useRef(null);
+  const refreshInFlightRef = useRef(null);
+  const lastRefreshRunAtRef = useRef(0);
+  const lastLocalDocumentUpsertAtRef = useRef(0);
+  const lastUpsertFingerprintRef = useRef("");
+  const documentsRef = useRef([]);
   const realtimeRefreshTimerRef = useRef(null);
+  const connectWalletRef = useRef(null);
+  const refreshDocumentsRef = useRef(null);
+  const refreshWalletSessionsRef = useRef(null);
+  const loadRemoteWorkspaceStateRef = useRef(null);
+  const pushActivityRef = useRef(null);
+  const walletRef = useRef(DEFAULT_WALLET);
+  const listenerContextRef = useRef({
+    isAuthenticated: false,
+    linkedWallet: "",
+    remoteEnabled: false,
+    accessToken: "",
+    userId: "",
+  });
+  const seenDocumentEventsRef = useRef(new Set());
+  const verificationFingerprintRef = useRef("");
+  const activityFingerprintRef = useRef("");
+  const walletSessionsFingerprintRef = useRef("");
 
   useEffect(() => {
     autoConnectGuard.current = false;
+    refreshInFlightRef.current = null;
+    lastRefreshRunAtRef.current = 0;
+    lastLocalDocumentUpsertAtRef.current = 0;
+    lastUpsertFingerprintRef.current = "";
+    documentsRef.current = [];
+    verificationFingerprintRef.current = "";
+    activityFingerprintRef.current = "";
+    walletSessionsFingerprintRef.current = "";
+    if (typeof window !== "undefined") {
+      const previousAutoConnectScope = window[AUTO_CONNECT_SCOPE_GUARD_KEY];
+      if (previousAutoConnectScope !== scopeKey) {
+        window[AUTO_CONNECT_EFFECT_GUARD_KEY] = false;
+        window[AUTO_CONNECT_SCOPE_GUARD_KEY] = scopeKey;
+      }
+    }
+    seenDocumentEventsRef.current = new Set();
   }, [scopeKey]);
 
   const walletLabel = useMemo(() => {
@@ -349,12 +441,27 @@ export function AppProvider({ children }) {
 
       const nextVerifications = verificationRows.map(mapRemoteVerification);
       const nextActivity = activityRows.map(mapRemoteActivity);
+      const nextVerificationFingerprint = JSON.stringify(nextVerifications);
+      const nextActivityFingerprint = JSON.stringify(nextActivity);
+      const nextWalletSessionsFingerprint = JSON.stringify(sessionRows || []);
 
-      setVerificationHistory(nextVerifications);
-      setActivity(nextActivity);
-      setWalletSessions(sessionRows || []);
-      setVerificationHistoryStorage(nextVerifications, scopeKey);
-      setActivityStorage(nextActivity, scopeKey);
+      if (verificationFingerprintRef.current !== nextVerificationFingerprint) {
+        setVerificationHistory(nextVerifications);
+        setVerificationHistoryStorage(nextVerifications, scopeKey);
+        verificationFingerprintRef.current = nextVerificationFingerprint;
+      }
+
+      if (activityFingerprintRef.current !== nextActivityFingerprint) {
+        setActivity(nextActivity);
+        setActivityStorage(nextActivity, scopeKey);
+        activityFingerprintRef.current = nextActivityFingerprint;
+      }
+
+      if (walletSessionsFingerprintRef.current !== nextWalletSessionsFingerprint) {
+        setWalletSessions(sessionRows || []);
+        walletSessionsFingerprintRef.current = nextWalletSessionsFingerprint;
+      }
+
       setSyncError("");
     } catch (error) {
       setSyncError(error?.message || "Failed to sync realtime workspace data.");
@@ -375,13 +482,21 @@ export function AppProvider({ children }) {
 
   const refreshWalletSessions = useCallback(async () => {
     if (!remoteEnabled) {
-      setWalletSessions([]);
+      if (walletSessionsFingerprintRef.current !== "[]") {
+        setWalletSessions([]);
+        walletSessionsFingerprintRef.current = "[]";
+      }
       return [];
     }
 
     const sessions = await getWalletSessions(session?.accessToken, userId).catch(() => []);
-    setWalletSessions(sessions || []);
-    return sessions || [];
+    const normalizedSessions = sessions || [];
+    const nextFingerprint = JSON.stringify(normalizedSessions);
+    if (walletSessionsFingerprintRef.current !== nextFingerprint) {
+      setWalletSessions(normalizedSessions);
+      walletSessionsFingerprintRef.current = nextFingerprint;
+    }
+    return normalizedSessions;
   }, [remoteEnabled, session, userId]);
 
   const updateDocumentAccess = useCallback(
@@ -414,22 +529,23 @@ export function AppProvider({ children }) {
         throw new Error("Shared privacy mode requires at least one wallet address.");
       }
 
-      const previousDocuments = documents;
-      setDocuments((current) =>
-        current.map((item) =>
-          item.hash?.toLowerCase() === normalizedHash
-            ? {
-                ...item,
-                privacyLevel: nextPrivacyLevel,
-                description,
-                fileName,
-                fileSize: Number(fileSize || 0),
-                fileType,
-                sharedWithWallets: effectiveShares,
-              }
-            : item
-        )
+      const previousDocuments = documentsRef.current;
+      const optimisticDocuments = previousDocuments.map((item) =>
+        item.hash?.toLowerCase() === normalizedHash
+          ? {
+              ...item,
+              privacyLevel: nextPrivacyLevel,
+              description,
+              fileName,
+              fileSize: Number(fileSize || 0),
+              fileType,
+              sharedWithWallets: effectiveShares,
+            }
+          : item
       );
+
+      setDocuments(optimisticDocuments);
+      documentsRef.current = optimisticDocuments;
 
       if (!remoteEnabled) {
         return true;
@@ -477,16 +593,19 @@ export function AppProvider({ children }) {
           status: "success",
         }).catch(() => null);
 
+        lastUpsertFingerprintRef.current = buildDocumentsFingerprint(optimisticDocuments);
+        lastLocalDocumentUpsertAtRef.current = Date.now();
         setLastSyncedAt(Date.now());
         setSyncError("");
         return true;
       } catch (error) {
         setDocuments(previousDocuments);
+        documentsRef.current = previousDocuments;
         setSyncError(error?.message || "Failed to update document access.");
         throw error;
       }
     },
-    [documents, remoteEnabled, session, userId]
+    [remoteEnabled, session, userId]
   );
 
   const setDisconnectedState = useCallback(() => {
@@ -495,127 +614,177 @@ export function AppProvider({ children }) {
       status: "disconnected",
     });
     setDocuments([]);
+    documentsRef.current = [];
+    lastUpsertFingerprintRef.current = "";
+    lastLocalDocumentUpsertAtRef.current = 0;
+    lastRefreshRunAtRef.current = 0;
+    refreshInFlightRef.current = null;
+    walletSessionsFingerprintRef.current = "[]";
     setWalletSessions([]);
   }, []);
 
   const refreshDocuments = useCallback(
     async ({ silent = false } = {}) => {
-      if (!wallet.account || wallet.status !== "connected") {
-        setDocuments([]);
-        return [];
+      if (refreshInFlightRef.current) {
+        return refreshInFlightRef.current;
       }
 
-      const linkedWallet = profile?.wallet_address?.toLowerCase() || "";
-      if (
-        isAuthenticated &&
-        linkedWallet &&
-        wallet.account.toLowerCase() !== linkedWallet
-      ) {
-        setDocuments([]);
-        if (remoteEnabled) {
-          void logSuspiciousActivity(session?.accessToken, userId, {
-            activity_type: "wallet_mismatch",
-            severity: "high",
-            description: "Connected wallet does not match linked profile wallet.",
-            meta: {
-              connectedWallet: wallet.account.toLowerCase(),
-              linkedWallet,
-            },
-          }).catch(() => null);
+      const now = Date.now();
+      if (silent && now - lastRefreshRunAtRef.current < MIN_SILENT_REFRESH_GAP_MS) {
+        return documentsRef.current;
+      }
+
+      const refreshPromise = (async () => {
+        if (!wallet.account || wallet.status !== "connected") {
+          if (documentsRef.current.length) {
+            setDocuments([]);
+            documentsRef.current = [];
+          }
+          return [];
         }
-        if (!silent && settings.notifications) {
-          toast.error("Connected wallet is not linked to the current account.");
-        }
-        return [];
-      }
 
-      if (!silent) {
-        setIsDocumentsLoading(true);
-      }
-
-      try {
-        const chainDocs = await getDocumentsByOwner(wallet.account);
-        let nextDocuments = chainDocs;
-
-        if (remoteEnabled) {
-          const remoteRows = await getUserDocumentRecords(session?.accessToken, userId).catch(() => []);
-          const remoteByHash = new Map(
-            remoteRows
-              .map(mapRemoteDocument)
-              .map((item) => [item.hash?.toLowerCase(), item])
-          );
-
-          nextDocuments = chainDocs.map((item) => {
-            const existing = remoteByHash.get(item.hash?.toLowerCase());
-            return {
-              ...item,
-              id: existing?.id || item.id || "",
-              privacyLevel: normalizePrivacyLevel(existing?.privacyLevel || item.privacyLevel),
-              description: existing?.description || item.description || "",
-              fileName: existing?.fileName || item.fileName || "",
-              fileSize: Number(existing?.fileSize || item.fileSize || 0),
-              fileType: existing?.fileType || item.fileType || "",
-              sharedWithWallets: Array.isArray(existing?.sharedWithWallets)
-                ? existing.sharedWithWallets
-                : [],
-              metadata: {
-                ...(existing?.metadata || {}),
-                ...(item.metadata || {}),
+        const linkedWallet = profile?.wallet_address?.toLowerCase() || "";
+        if (
+          isAuthenticated &&
+          linkedWallet &&
+          wallet.account.toLowerCase() !== linkedWallet
+        ) {
+          if (documentsRef.current.length) {
+            setDocuments([]);
+            documentsRef.current = [];
+          }
+          if (remoteEnabled) {
+            void logSuspiciousActivity(session?.accessToken, userId, {
+              activity_type: "wallet_mismatch",
+              severity: "high",
+              description: "Connected wallet does not match linked profile wallet.",
+              meta: {
+                connectedWallet: wallet.account.toLowerCase(),
+                linkedWallet,
               },
-            };
+            }).catch(() => null);
+          }
+          if (!silent && settings.notifications) {
+            toast.error("Connected wallet is not linked to the current account.");
+          }
+          return [];
+        }
+
+        if (!silent) {
+          setIsDocumentsLoading(true);
+        }
+
+        try {
+          const chainDocs = await getDocumentsByOwner(wallet.account);
+          let nextDocuments = chainDocs;
+
+          if (remoteEnabled) {
+            const remoteRows = await getUserDocumentRecords(session?.accessToken, userId).catch(() => []);
+            const remoteByHash = new Map(
+              remoteRows
+                .map(mapRemoteDocument)
+                .map((item) => [item.hash?.toLowerCase(), item])
+            );
+
+            nextDocuments = chainDocs.map((item) => {
+              const existing = remoteByHash.get(item.hash?.toLowerCase());
+              return {
+                ...item,
+                id: existing?.id || item.id || "",
+                privacyLevel: normalizePrivacyLevel(existing?.privacyLevel || item.privacyLevel),
+                description: existing?.description || item.description || "",
+                fileName: existing?.fileName || item.fileName || "",
+                fileSize: Number(existing?.fileSize || item.fileSize || 0),
+                fileType: existing?.fileType || item.fileType || "",
+                sharedWithWallets: Array.isArray(existing?.sharedWithWallets)
+                  ? existing.sharedWithWallets
+                  : [],
+                metadata: {
+                  ...(existing?.metadata || {}),
+                  ...(item.metadata || {}),
+                },
+              };
+            });
+          }
+
+          const previousFingerprint = buildDocumentsFingerprint(documentsRef.current);
+          const nextFingerprint = buildDocumentsFingerprint(nextDocuments);
+
+          if (previousFingerprint !== nextFingerprint) {
+            setDocuments(nextDocuments);
+            documentsRef.current = nextDocuments;
+          }
+
+          setLastSyncedAt(Date.now());
+          setSyncError("");
+
+          if (remoteEnabled) {
+            const shouldUpsert = lastUpsertFingerprintRef.current !== nextFingerprint;
+            if (shouldUpsert) {
+              await upsertDocumentRecords(session?.accessToken, userId, nextDocuments).catch(() => null);
+              lastUpsertFingerprintRef.current = nextFingerprint;
+              lastLocalDocumentUpsertAtRef.current = Date.now();
+            }
+
+            await updateWalletActivity(session?.accessToken, userId, wallet.account).catch(() => null);
+          }
+
+          if (!silent && settings.notifications) {
+            toast.success("Documents refreshed.");
+          }
+
+          return nextDocuments;
+        } catch (error) {
+          if (remoteEnabled) {
+            try {
+              const fallbackRows = await getUserDocumentRecords(session?.accessToken, userId);
+              const fallbackDocuments = fallbackRows.map(mapRemoteDocument);
+              const fallbackFingerprint = buildDocumentsFingerprint(fallbackDocuments);
+
+              if (buildDocumentsFingerprint(documentsRef.current) !== fallbackFingerprint) {
+                setDocuments(fallbackDocuments);
+                documentsRef.current = fallbackDocuments;
+              }
+
+              lastUpsertFingerprintRef.current = fallbackFingerprint;
+              setLastSyncedAt(Date.now());
+              setSyncError("");
+              return fallbackDocuments;
+            } catch {
+              // Ignore fallback failure and continue with blockchain error handling.
+            }
+          }
+
+          const message = error?.message || "Failed to refresh documents.";
+          setSyncError(message);
+          if (!silent && settings.notifications) {
+            toast.error(message);
+          }
+
+          pushActivity({
+            type: "error",
+            title: "Document Sync Failed",
+            description: message,
           });
-        }
 
-        setDocuments(nextDocuments);
-        setLastSyncedAt(Date.now());
-        setSyncError("");
-
-        if (remoteEnabled) {
-          await upsertDocumentRecords(session?.accessToken, userId, nextDocuments).catch(() => null);
-          await updateWalletActivity(session?.accessToken, userId, wallet.account).catch(() => null);
-        }
-
-        if (!silent && settings.notifications) {
-          toast.success("Documents refreshed.");
-        }
-
-        return nextDocuments;
-      } catch (error) {
-        if (remoteEnabled) {
-          try {
-            const fallbackRows = await getUserDocumentRecords(session?.accessToken, userId);
-            const fallbackDocuments = fallbackRows.map(mapRemoteDocument);
-            setDocuments(fallbackDocuments);
-            setLastSyncedAt(Date.now());
-            setSyncError("");
-            return fallbackDocuments;
-          } catch {
-            // Ignore fallback failure and continue with blockchain error handling.
+          return [];
+        } finally {
+          if (!silent) {
+            setIsDocumentsLoading(false);
           }
         }
+      })();
 
-        const message = error?.message || "Failed to refresh documents.";
-        setSyncError(message);
-        if (!silent && settings.notifications) {
-          toast.error(message);
-        }
+      refreshInFlightRef.current = refreshPromise.finally(() => {
+        refreshInFlightRef.current = null;
+        lastRefreshRunAtRef.current = Date.now();
+      });
 
-        pushActivity({
-          type: "error",
-          title: "Document Sync Failed",
-          description: message,
-        });
-
-        return [];
-      } finally {
-        if (!silent) {
-          setIsDocumentsLoading(false);
-        }
-      }
+      return refreshInFlightRef.current;
     },
     [
       isAuthenticated,
-      profile,
+      profile?.wallet_address,
       pushActivity,
       remoteEnabled,
       session,
@@ -628,106 +797,128 @@ export function AppProvider({ children }) {
 
   const connectWallet = useCallback(
     async ({ requestIfMissing = true, autoSwitch = true, silent = false } = {}) => {
-      setWallet((previous) => ({ ...previous, isConnecting: true }));
-
-      try {
-        const account = await getConnectedWallet({ requestIfMissing });
-
-        if (!account) {
-          setDisconnectedState();
-          if (!silent && settings.notifications) {
-            toast.error("No wallet account available.");
-          }
-          return "";
-        }
-
-        const networkResult = await ensureAmoyNetwork({ autoSwitch });
-        const supported = Boolean(networkResult.isSupported);
-
-        setWallet({
-          account,
-          chainId: networkResult.chainId,
-          status: supported ? "connected" : "wrong-network",
-          isConnecting: false,
-          isSupportedNetwork: supported,
-        });
-
-        setSessionStorage(sessionPayload(account, networkResult.chainId));
-
-        if (!supported) {
-          setShowWrongNetworkModal(true);
-          if (remoteEnabled) {
-            await logSuspiciousActivity(session?.accessToken, userId, {
-              activity_type: "wrong_network_attempt",
-              severity: "medium",
-              description: "Wallet connected on unsupported chain.",
-              meta: {
-                chainId: networkResult.chainId,
-                account: account.toLowerCase(),
-              },
-            }).catch(() => null);
-          }
-          if (!silent && settings.notifications) {
-            toast.error(`Switch your wallet to ${AMOY_CHAIN_NAME}.`);
-          }
-          return account;
-        }
-
-        if (!silent && settings.notifications) {
-          toast.success("Wallet connected.");
-        }
-
-        pushActivity({
-          type: "wallet",
-          title: "Wallet Connected",
-          description: shortAddress(account),
-        });
-
-        if (isAuthenticated && !profile?.wallet_address) {
-          await linkWallet(account).catch(() => null);
-        }
-
-        if (remoteEnabled) {
-          await logAuditEvent(session?.accessToken, userId, {
-            action: "wallet_connected",
-            resource_type: "wallet",
-            resource_id: account.toLowerCase(),
-            status: "success",
-          }).catch(() => null);
-          await refreshWalletSessions().catch(() => null);
-        }
-
-        await refreshDocuments({ silent: true });
-        return account;
-      } catch (error) {
-        const message = error?.message || "Wallet connection failed.";
-
-        setDisconnectedState();
-
-        if (!silent && settings.notifications) {
-          toast.error(message);
-        }
-
-        pushActivity({
-          type: "error",
-          title: "Wallet Error",
-          description: message,
-        });
-
-        return "";
-      } finally {
-        setWallet((previous) => ({ ...previous, isConnecting: false }));
+      if (connectInFlightRef.current) {
+        return connectInFlightRef.current;
       }
+
+      const connectPromise = (async () => {
+        setWallet((previous) => ({ ...previous, isConnecting: true }));
+        console.debug("[trustdoc:wallet] connectWallet start", {
+          requestIfMissing,
+          autoSwitch,
+          silent,
+        });
+
+        try {
+          const account = await getConnectedWallet({ requestIfMissing });
+
+          if (!account) {
+            setDisconnectedState();
+            if (!silent && settings.notifications) {
+              toast.error("No wallet account available.");
+            }
+            return "";
+          }
+
+          const networkResult = await ensureAmoyNetwork({ autoSwitch });
+          const supported = Boolean(networkResult.isSupported);
+
+          setWallet({
+            account,
+            chainId: networkResult.chainId,
+            status: supported ? "connected" : "wrong-network",
+            isConnecting: false,
+            isSupportedNetwork: supported,
+          });
+
+          setSessionStorage(sessionPayload(account, networkResult.chainId));
+          seenDocumentEventsRef.current = new Set();
+          lastUpsertFingerprintRef.current = "";
+          lastLocalDocumentUpsertAtRef.current = 0;
+
+          if (!supported) {
+            setShowWrongNetworkModal(true);
+            if (remoteEnabled) {
+              await logSuspiciousActivity(session?.accessToken, userId, {
+                activity_type: "wrong_network_attempt",
+                severity: "medium",
+                description: "Wallet connected on unsupported chain.",
+                meta: {
+                  chainId: networkResult.chainId,
+                  account: account.toLowerCase(),
+                },
+              }).catch(() => null);
+            }
+            if (!silent && settings.notifications) {
+              toast.error(`Switch your wallet to ${AMOY_CHAIN_NAME}.`);
+            }
+            return account;
+          }
+
+          if (!silent && settings.notifications) {
+            toast.success("Wallet connected.");
+          }
+
+          pushActivity({
+            type: "wallet",
+            title: "Wallet Connected",
+            description: shortAddress(account),
+          });
+
+          if (isAuthenticated && !profile?.wallet_address) {
+            await linkWallet(account).catch(() => null);
+          }
+
+          if (remoteEnabled) {
+            await logAuditEvent(session?.accessToken, userId, {
+              action: "wallet_connected",
+              resource_type: "wallet",
+              resource_id: account.toLowerCase(),
+              status: "success",
+            }).catch(() => null);
+            await refreshWalletSessions().catch(() => null);
+          }
+
+          await refreshDocuments({ silent: true });
+          console.debug("[trustdoc:wallet] connectWallet success", { account });
+          return account;
+        } catch (error) {
+          const message = error?.message || "Wallet connection failed.";
+          console.error("[trustdoc:wallet] connectWallet error", error);
+
+          setDisconnectedState();
+
+          if (!silent && settings.notifications) {
+            toast.error(message);
+          }
+
+          pushActivity({
+            type: "error",
+            title: "Wallet Error",
+            description: message,
+          });
+
+          return "";
+        } finally {
+          setWallet((previous) => ({ ...previous, isConnecting: false }));
+        }
+      })();
+
+      connectInFlightRef.current = connectPromise.finally(() => {
+        connectInFlightRef.current = null;
+      });
+
+      return connectInFlightRef.current;
     },
     [
       isAuthenticated,
       linkWallet,
-      profile,
+      profile?.wallet_address,
       pushActivity,
       refreshWalletSessions,
       refreshDocuments,
       remoteEnabled,
-      session?.accessToken,
+      session,
       setDisconnectedState,
       settings.notifications,
       userId,
@@ -847,7 +1038,7 @@ export function AppProvider({ children }) {
       pushActivity,
       refreshDocuments,
       remoteEnabled,
-      session?.accessToken,
+      session,
       settings.notifications,
       userId,
       wallet.account,
@@ -863,31 +1054,85 @@ export function AppProvider({ children }) {
 
   const scheduleRealtimeRefresh = useCallback(
     (reason = "external-change") => {
+      const reasonType = String(reason).split(":")[0];
+      if (
+        reasonType === "documents" &&
+        Date.now() - lastLocalDocumentUpsertAtRef.current < LOCAL_DOCUMENT_SYNC_COOLDOWN_MS
+      ) {
+        return;
+      }
+
       if (realtimeRefreshTimerRef.current) {
         clearTimeout(realtimeRefreshTimerRef.current);
       }
 
-      setIsSyncRefreshPending(true);
+      setIsSyncRefreshPending((previous) => (previous ? previous : true));
 
       realtimeRefreshTimerRef.current = setTimeout(() => {
         void (async () => {
           try {
-            await Promise.all([
-              refreshDocuments({ silent: true }),
-              loadRemoteWorkspaceState(),
-            ]);
+            const tasks = [loadRemoteWorkspaceStateRef.current?.()];
+
+            if (reasonType === "documents") {
+              tasks.push(refreshDocumentsRef.current?.({ silent: true }));
+            } else if (reasonType === "wallet") {
+              const walletRefreshTask = refreshWalletSessionsRef.current?.();
+              if (walletRefreshTask) {
+                tasks.push(walletRefreshTask.catch(() => null));
+              }
+            }
+
+            await Promise.all(tasks.filter(Boolean));
             setLastSyncedAt(Date.now());
             setSyncError("");
           } catch (error) {
             setSyncError(error?.message || `Failed to sync after ${reason}.`);
           } finally {
-            setIsSyncRefreshPending(false);
+            setIsSyncRefreshPending((previous) => (previous ? false : previous));
           }
         })();
       }, REALTIME_REFRESH_DEBOUNCE_MS);
     },
-    [loadRemoteWorkspaceState, refreshDocuments]
+    []
   );
+
+  useEffect(() => {
+    walletRef.current = wallet;
+  }, [wallet]);
+
+  useEffect(() => {
+    documentsRef.current = documents;
+  }, [documents]);
+
+  useEffect(() => {
+    listenerContextRef.current = {
+      isAuthenticated,
+      linkedWallet: profile?.wallet_address?.toLowerCase() || "",
+      remoteEnabled,
+      accessToken: session?.accessToken || "",
+      userId,
+    };
+  }, [isAuthenticated, profile?.wallet_address, remoteEnabled, session?.accessToken, userId]);
+
+  useEffect(() => {
+    connectWalletRef.current = connectWallet;
+  }, [connectWallet]);
+
+  useEffect(() => {
+    refreshDocumentsRef.current = refreshDocuments;
+  }, [refreshDocuments]);
+
+  useEffect(() => {
+    refreshWalletSessionsRef.current = refreshWalletSessions;
+  }, [refreshWalletSessions]);
+
+  useEffect(() => {
+    loadRemoteWorkspaceStateRef.current = loadRemoteWorkspaceState;
+  }, [loadRemoteWorkspaceState]);
+
+  useEffect(() => {
+    pushActivityRef.current = pushActivity;
+  }, [pushActivity]);
 
   const documentsRealtime = useRealtimeSubscription({
     table: "documents",
@@ -897,7 +1142,7 @@ export function AppProvider({ children }) {
     accessToken: session?.accessToken || "",
     onEvent: (payload) => {
       setLastRealtimeEventAt(Date.now());
-      scheduleRealtimeRefresh(`documents:${payload?.eventType || "*"}`);
+      scheduleRealtimeRefresh(`documents:${payload?.eventType || payload?.type || "*"}`);
     },
   });
 
@@ -909,7 +1154,7 @@ export function AppProvider({ children }) {
     accessToken: session?.accessToken || "",
     onEvent: (payload) => {
       setLastRealtimeEventAt(Date.now());
-      scheduleRealtimeRefresh(`verification:${payload?.eventType || "*"}`);
+      scheduleRealtimeRefresh(`verification:${payload?.eventType || payload?.type || "*"}`);
     },
   });
 
@@ -921,7 +1166,7 @@ export function AppProvider({ children }) {
     accessToken: session?.accessToken || "",
     onEvent: (payload) => {
       setLastRealtimeEventAt(Date.now());
-      scheduleRealtimeRefresh(`activity:${payload?.eventType || "*"}`);
+      scheduleRealtimeRefresh(`activity:${payload?.eventType || payload?.type || "*"}`);
     },
   });
 
@@ -933,14 +1178,13 @@ export function AppProvider({ children }) {
     accessToken: session?.accessToken || "",
     onEvent: (payload) => {
       setLastRealtimeEventAt(Date.now());
-      scheduleRealtimeRefresh(`wallet:${payload?.eventType || "*"}`);
+      scheduleRealtimeRefresh(`wallet:${payload?.eventType || payload?.type || "*"}`);
     },
   });
 
-  useEffect(() => {
+  const realtimeStatus = useMemo(() => {
     if (!remoteEnabled) {
-      setRealtimeStatus("disabled");
-      return;
+      return "disabled";
     }
 
     const statuses = [
@@ -951,21 +1195,18 @@ export function AppProvider({ children }) {
     ].filter(Boolean);
 
     if (!statuses.length) {
-      setRealtimeStatus("connecting");
-      return;
+      return "connecting";
     }
 
     if (statuses.some((item) => item === "CHANNEL_ERROR" || item === "TIMED_OUT")) {
-      setRealtimeStatus("error");
-      return;
+      return "error";
     }
 
     if (statuses.every((item) => item === "SUBSCRIBED")) {
-      setRealtimeStatus("connected");
-      return;
+      return "connected";
     }
 
-    setRealtimeStatus("connecting");
+    return "connecting";
   }, [
     activityRealtime.status,
     documentsRealtime.status,
@@ -991,31 +1232,52 @@ export function AppProvider({ children }) {
 
   useEffect(() => {
     const localSettings = getSettingsStorage(scopeKey);
-    const mergedSettings = {
+    const storedVerifications = getVerificationHistoryStorage(scopeKey);
+    const storedActivity = getActivityStorage(scopeKey);
+    setSettings({
       ...DEFAULT_SETTINGS,
       ...(localSettings || {}),
       ...(profile?.settings || {}),
-    };
-    queueMicrotask(() => {
-      setSettings(mergedSettings);
-      setVerificationHistory(getVerificationHistoryStorage(scopeKey));
-      setActivity(getActivityStorage(scopeKey));
-      setDocuments([]);
-      setLastSyncedAt(0);
-      setPendingTransactions([]);
-      setWalletSessions([]);
     });
+    setVerificationHistory(storedVerifications);
+    setActivity(storedActivity);
+    verificationFingerprintRef.current = JSON.stringify(storedVerifications);
+    activityFingerprintRef.current = JSON.stringify(storedActivity);
+    setDocuments([]);
+    documentsRef.current = [];
+    setLastSyncedAt(0);
+    setPendingTransactions([]);
+    setWalletSessions([]);
+    walletSessionsFingerprintRef.current = "[]";
+    setSyncError("");
+    lastUpsertFingerprintRef.current = "";
+    lastLocalDocumentUpsertAtRef.current = 0;
+    lastRefreshRunAtRef.current = 0;
+  }, [scopeKey]);
 
-    if (!isAuthenticated) {
+  useEffect(() => {
+    if (!profile?.settings) {
       return;
     }
 
-    if (!remoteEnabled) {
+    setSettings((current) => ({
+      ...DEFAULT_SETTINGS,
+      ...current,
+      ...profile.settings,
+    }));
+  }, [profile?.settings]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !remoteEnabled) {
       return;
     }
 
-    void loadRemoteWorkspaceState();
-  }, [isAuthenticated, loadRemoteWorkspaceState, profile?.settings, remoteEnabled, scopeKey]);
+    const timer = setTimeout(() => {
+      void loadRemoteWorkspaceStateRef.current?.();
+    }, 0);
+
+    return () => clearTimeout(timer);
+  }, [isAuthenticated, remoteEnabled, scopeKey]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -1027,132 +1289,166 @@ export function AppProvider({ children }) {
     }
 
     const timer = setTimeout(() => {
-      void refreshDocuments({ silent: true });
+      void refreshDocumentsRef.current?.({ silent: true });
     }, 0);
 
     return () => clearTimeout(timer);
-  }, [isAuthenticated, refreshDocuments, userId, wallet.account, wallet.status]);
+  }, [isAuthenticated, userId, wallet.account, wallet.status]);
 
   useEffect(() => {
-    if (autoConnectGuard.current) {
-      return;
-    }
-
-    autoConnectGuard.current = true;
     const currentSession = getSessionStorage();
-
     if (!settings.autoConnect || currentSession?.manualDisconnect) {
       return;
     }
 
+    const browserWindow = typeof window === "undefined" ? null : window;
+    if (autoConnectGuard.current || browserWindow?.[AUTO_CONNECT_EFFECT_GUARD_KEY]) {
+      return;
+    }
+
+    autoConnectGuard.current = true;
+    if (browserWindow) {
+      browserWindow[AUTO_CONNECT_EFFECT_GUARD_KEY] = true;
+    }
+
     const timer = setTimeout(() => {
-      void connectWallet({ requestIfMissing: false, autoSwitch: false, silent: true });
+      void connectWalletRef.current?.({
+        requestIfMissing: false,
+        autoSwitch: false,
+        silent: true,
+      });
     }, 0);
 
     return () => clearTimeout(timer);
-  }, [connectWallet, settings.autoConnect]);
+  }, [scopeKey, settings.autoConnect]);
 
   useEffect(() => {
-    if (!window?.ethereum?.on) {
+    const browserWindow = typeof window === "undefined" ? null : window;
+    const ethereum = browserWindow?.ethereum;
+
+    if (!ethereum?.on) {
       return undefined;
     }
 
     const onChainChanged = async (chainId) => {
-      const supported = isAmoyChain(chainId);
-      setWallet((previous) => {
-        return {
-          ...previous,
-          chainId,
-          status: previous.account ? (supported ? "connected" : "wrong-network") : "disconnected",
-          isSupportedNetwork: supported,
-        };
-      });
+      try {
+        const supported = isAmoyChain(chainId);
+        const activeAccount = walletRef.current.account;
 
-      if (!supported) {
-        setShowWrongNetworkModal(true);
-      } else if (wallet.account) {
+        setWallet((previous) => {
+          return {
+            ...previous,
+            chainId,
+            status: previous.account ? (supported ? "connected" : "wrong-network") : "disconnected",
+            isSupportedNetwork: supported,
+          };
+        });
+
+        if (!supported) {
+          setShowWrongNetworkModal(true);
+          return;
+        }
+
         setShowWrongNetworkModal(false);
-        pushActivity({
+
+        if (!activeAccount) {
+          return;
+        }
+
+        pushActivityRef.current?.({
           type: "wallet",
           title: "Network Changed",
           description: "Wallet switched network.",
         });
-        if (remoteEnabled) {
-          await updateWalletActivity(session?.accessToken, userId, wallet.account).catch(() => null);
+
+        const runtime = listenerContextRef.current;
+        if (runtime.remoteEnabled && runtime.accessToken && runtime.userId) {
+          await updateWalletActivity(runtime.accessToken, runtime.userId, activeAccount).catch(() => null);
         }
-        await refreshDocuments({ silent: true });
-        await loadRemoteWorkspaceState();
+
+        await refreshDocumentsRef.current?.({ silent: true });
+        await loadRemoteWorkspaceStateRef.current?.();
+      } catch (error) {
+        console.error("[trustdoc:wallet] chainChanged handler failed", error);
       }
     };
 
     const onAccountsChanged = async (accounts) => {
-      const account = accounts?.[0] || "";
+      try {
+        const account = accounts?.[0] || "";
 
-      if (!account) {
-        setDisconnectedState();
-        return;
-      }
+        if (!account) {
+          setDisconnectedState();
+          return;
+        }
 
-      setWallet((previous) => ({
-        ...previous,
-        account,
-        status: previous.isSupportedNetwork ? "connected" : "wrong-network",
-      }));
-      setSessionStorage(sessionPayload(account, wallet.chainId));
-      pushActivity({
-        type: "wallet",
-        title: "Wallet Account Switched",
-        description: shortAddress(account),
-      });
+        let chainId = walletRef.current.chainId;
+        try {
+          chainId = await getWalletChainId();
+        } catch {
+          // Use latest known chain id if wallet RPC chain check fails.
+        }
 
-      if (remoteEnabled) {
-        await updateWalletActivity(session?.accessToken, userId, account).catch(() => null);
-        if (isAuthenticated && profile?.wallet_address) {
-          const linkedWallet = profile.wallet_address.toLowerCase();
-          if (account.toLowerCase() !== linkedWallet) {
-            await logSuspiciousActivity(session?.accessToken, userId, {
-              activity_type: "wallet_changed_to_unlinked",
-              severity: "high",
-              description: "Wallet switched to an address not linked to this account.",
-              meta: {
-                linkedWallet,
-                connectedWallet: account.toLowerCase(),
-              },
-            }).catch(() => null);
+        const supported = isAmoyChain(chainId);
+        setWallet((previous) => ({
+          ...previous,
+          account,
+          chainId,
+          status: supported ? "connected" : "wrong-network",
+          isSupportedNetwork: supported,
+        }));
+
+        setSessionStorage(sessionPayload(account, chainId));
+        setShowWrongNetworkModal(!supported);
+        seenDocumentEventsRef.current = new Set();
+        lastUpsertFingerprintRef.current = "";
+        lastLocalDocumentUpsertAtRef.current = 0;
+
+        pushActivityRef.current?.({
+          type: "wallet",
+          title: "Wallet Account Switched",
+          description: shortAddress(account),
+        });
+
+        const runtime = listenerContextRef.current;
+        if (runtime.remoteEnabled && runtime.accessToken && runtime.userId) {
+          await updateWalletActivity(runtime.accessToken, runtime.userId, account).catch(() => null);
+
+          if (runtime.isAuthenticated && runtime.linkedWallet) {
+            if (account.toLowerCase() !== runtime.linkedWallet) {
+              await logSuspiciousActivity(runtime.accessToken, runtime.userId, {
+                activity_type: "wallet_changed_to_unlinked",
+                severity: "high",
+                description: "Wallet switched to an address not linked to this account.",
+                meta: {
+                  linkedWallet: runtime.linkedWallet,
+                  connectedWallet: account.toLowerCase(),
+                },
+              }).catch(() => null);
+            }
           }
         }
-      }
 
-      await refreshWalletSessions().catch(() => null);
-      await refreshDocuments({ silent: true });
-      await loadRemoteWorkspaceState();
+        await refreshWalletSessionsRef.current?.().catch(() => null);
+        await refreshDocumentsRef.current?.({ silent: true });
+        await loadRemoteWorkspaceStateRef.current?.();
+      } catch (error) {
+        console.error("[trustdoc:wallet] accountsChanged handler failed", error);
+      }
     };
 
-    window.ethereum.on("chainChanged", onChainChanged);
-    window.ethereum.on("accountsChanged", onAccountsChanged);
+    ethereum.on("chainChanged", onChainChanged);
+    ethereum.on("accountsChanged", onAccountsChanged);
 
     return () => {
-      window.ethereum.removeListener?.("chainChanged", onChainChanged);
-      window.ethereum.removeListener?.("accountsChanged", onAccountsChanged);
+      ethereum.removeListener?.("chainChanged", onChainChanged);
+      ethereum.removeListener?.("accountsChanged", onAccountsChanged);
     };
-  }, [
-    isAuthenticated,
-    loadRemoteWorkspaceState,
-    profile?.wallet_address,
-    pushActivity,
-    refreshDocuments,
-    refreshWalletSessions,
-    remoteEnabled,
-    session?.accessToken,
-    setDisconnectedState,
-    userId,
-    wallet.account,
-    wallet.chainId,
-  ]);
+  }, [setDisconnectedState]);
 
   usePolling(
     () => {
-      void refreshDocuments({ silent: true });
+      void refreshDocumentsRef.current?.({ silent: true });
     },
     POLL_INTERVAL_MS,
     Boolean(wallet.account && wallet.status === "connected")
@@ -1163,45 +1459,48 @@ export function AppProvider({ children }) {
       return undefined;
     }
 
+    const accountLower = wallet.account.toLowerCase();
     const unsubscribe = subscribeToDocumentEvents({
-      onRegistered: ({ owner, hash }) => {
-        if (owner?.toLowerCase() !== wallet.account.toLowerCase()) {
+      onRegistered: ({ owner, hash, txHash }) => {
+        if (owner?.toLowerCase() !== accountLower) {
           return;
         }
 
-        pushActivity({
+        const eventKey = `registered:${txHash || hash || ""}`;
+        if (!rememberSeenEvent(seenDocumentEventsRef, eventKey)) {
+          return;
+        }
+
+        pushActivityRef.current?.({
           type: "transaction",
           title: "Document Registered",
           description: sanitizeText(hash || ""),
         });
-        void refreshDocuments({ silent: true });
+        void refreshDocumentsRef.current?.({ silent: true });
       },
-      onRevoked: ({ owner, hash }) => {
-        if (owner?.toLowerCase() !== wallet.account.toLowerCase()) {
+      onRevoked: ({ owner, hash, txHash }) => {
+        if (owner?.toLowerCase() !== accountLower) {
           return;
         }
 
-        pushActivity({
+        const eventKey = `revoked:${txHash || hash || ""}`;
+        if (!rememberSeenEvent(seenDocumentEventsRef, eventKey)) {
+          return;
+        }
+
+        pushActivityRef.current?.({
           type: "transaction",
           title: "Document Revoked",
           description: sanitizeText(hash || ""),
         });
-        void refreshDocuments({ silent: true });
+        void refreshDocumentsRef.current?.({ silent: true });
       },
     });
 
     return () => {
       unsubscribe?.();
     };
-  }, [wallet.account, wallet.status, pushActivity, refreshDocuments]);
-
-  useEffect(() => {
-    if (!remoteEnabled || !wallet.account || wallet.status !== "connected" || !documents.length) {
-      return;
-    }
-
-    void upsertDocumentRecords(session?.accessToken, userId, documents).catch(() => null);
-  }, [documents, remoteEnabled, session?.accessToken, userId, wallet.account, wallet.status]);
+  }, [wallet.account, wallet.status]);
 
   const walletVerification = useMemo(() => {
     if (!wallet.account) {
