@@ -1,9 +1,4 @@
-/*
-Changes:
-- Normalized file hash with shared utility to avoid duplicate 0x prefixes.
-- Ensured registerDocument() always receives a valid 0x-prefixed bytes32 hash.
-- Preserved raw hash storage for metadata while using normalized hash on-chain.
-*/
+// CHANGES: Normalized file hash with shared utility to avoid duplicate 0x prefixes and ensure on-chain registration uses valid bytes32 hash.
 
 import { useState } from "react";
 import { hashFile } from "../utils/hashFile";

@@ -1,9 +1,4 @@
-/*
-Changes:
-- Added hash normalization before on-chain verification.
-- Early-return when a document is not registered on-chain to avoid unnecessary IPFS lookups.
-- Returned explicit verified/reason payload for clearer downstream handling.
-*/
+// CHANGES: Added hash normalization before on-chain verification and early-return for not-registered documents to avoid unnecessary IPFS fetches.
 
 import { verifyDocumentOnChain } from "../utils/contract";
 import { normalizeHash } from "../utils/hashUtils";
