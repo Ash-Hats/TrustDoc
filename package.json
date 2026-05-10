@@ -1,0 +1,27 @@
+{
+  "name": "trustdoc",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ignition": "^3.1.4",
+    "@nomicfoundation/hardhat-toolbox": "^7.0.0",
+    "@nomicfoundation/hardhat-toolbox-viem": "^5.0.4",
+    "@types/node": "^22.19.17",
+    "forge-std": "github:foundry-rs/forge-std#v1.9.4",
+    "hardhat": "^3.4.4",
+    "typescript": "~5.8.0",
+    "viem": "^2.48.8"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "lucide-react": "^1.14.0"
+  }
+}

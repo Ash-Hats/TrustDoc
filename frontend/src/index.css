@@ -1,0 +1,79 @@
+@import url("https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    --accent-start: #8b5cf6;
+    --accent-end: #6366f1;
+    --bg-main: #0f1117;
+    --bg-soft: #121624;
+    --bg-elev: #1a1f2e;
+  }
+
+  :root[data-accent="violet"] {
+    --accent-start: #8b5cf6;
+    --accent-end: #6366f1;
+  }
+
+  :root[data-accent="cyan"] {
+    --accent-start: #22d3ee;
+    --accent-end: #3b82f6;
+  }
+
+  :root[data-accent="sunset"] {
+    --accent-start: #a855f7;
+    --accent-end: #ec4899;
+  }
+
+  :root[data-theme="midnight"] {
+    --bg-main: #090b12;
+    --bg-soft: #0f1320;
+    --bg-elev: #151a2a;
+  }
+
+  * {
+    @apply box-border;
+  }
+
+  body {
+    @apply m-0 min-h-screen font-sans text-gray-100 antialiased;
+    background-color: var(--bg-main);
+    background-image: radial-gradient(circle at 15% 20%, rgba(139, 92, 246, 0.16), transparent 30%),
+      radial-gradient(circle at 85% 0%, rgba(14, 165, 233, 0.13), transparent 32%),
+      linear-gradient(180deg, var(--bg-main) 0%, var(--bg-soft) 45%, var(--bg-main) 100%);
+  }
+
+  #root {
+    @apply min-h-screen;
+  }
+}
+
+@layer utilities {
+  .glass-card {
+    @apply border border-white/10 bg-white/5 backdrop-blur-md shadow-glass;
+  }
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  background-color: rgba(148, 163, 184, 0.45);
+}
