@@ -1,4 +1,12 @@
+/*
+Changes:
+- Added hash normalization before on-chain verification.
+- Early-return when a document is not registered on-chain to avoid unnecessary IPFS lookups.
+- Returned explicit verified/reason payload for clearer downstream handling.
+*/
+
 import { verifyDocumentOnChain } from "../utils/contract";
+import { normalizeHash } from "../utils/hashUtils";
 import { sanitizeText } from "../utils/security";
 
 export function normalizeDocument(doc) {
@@ -34,10 +42,23 @@ export async function fetchMetadata(gatewayUrl) {
 }
 
 export async function verifyDocumentWithMetadata(hashHex) {
-  const chainResult = await verifyDocumentOnChain(hashHex);
+  const normalizedHash = normalizeHash(hashHex);
+  const chainResult = await verifyDocumentOnChain(normalizedHash);
+
+  if (!chainResult.exists) {
+    return {
+      verified: false,
+      reason: "NOT_REGISTERED",
+      chainResult: normalizeDocument(chainResult),
+      metadata: null,
+    };
+  }
+
   const metadata = await fetchMetadata(chainResult?.gatewayUrl).catch(() => null);
 
   return {
+    verified: true,
+    reason: "REGISTERED",
     chainResult: normalizeDocument(chainResult),
     metadata,
   };

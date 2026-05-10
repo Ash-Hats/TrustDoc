@@ -1,3 +1,9 @@
+/*
+Changes:
+- Ensured hashFile() returns raw 64-character hex strings without a 0x prefix.
+- Centralized prefix handling in normalizeHash() to avoid duplicate prefix bugs.
+*/
+
 export async function hashFile(file) {
   const arrayBuffer = await file.arrayBuffer();
 
