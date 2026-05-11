@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Copy,
   Download,
@@ -8,6 +8,7 @@ import {
   List,
   Lock,
   QrCode,
+  RefreshCw,
   ScanSearch,
   ShieldCheck,
   Users,
@@ -82,6 +83,7 @@ export default function MyDocuments() {
     settings,
     isDocumentsLoading,
     updateDocumentAccess,
+    refreshDocuments,
   } =
     useAppContext();
   const { filters, updateFilters, setPage } = useDocumentFilters();
@@ -93,8 +95,13 @@ export default function MyDocuments() {
   const [qrDocument, setQrDocument] = useState(null);
   const [accessEditor, setAccessEditor] = useState(null);
   const [isSavingAccess, setIsSavingAccess] = useState(false);
+  const [isManualRefreshing, setIsManualRefreshing] = useState(false);
   const requestRef = useRef(0);
   const debouncedQuery = useDebouncedValue(filters.q, 250);
+  const hasPendingTransactions = useMemo(
+    () => pendingTransactions.some((entry) => entry?.status === "pending"),
+    [pendingTransactions]
+  );
 
   const enrichedDocuments = useMemo(
     () => enrichDocuments(documents, pendingTransactions, verificationHistory),
@@ -129,6 +136,55 @@ export default function MyDocuments() {
     () => paginateDocuments(filteredDocuments, filters.page, PAGE_SIZE),
     [filteredDocuments, filters.page]
   );
+
+  useEffect(() => {
+    void refreshDocuments({ silent: true });
+  }, [refreshDocuments]);
+
+  useEffect(() => {
+    if (!hasPendingTransactions) {
+      return undefined;
+    }
+
+    const timer = setInterval(() => {
+      void refreshDocuments({ silent: true });
+    }, 7000);
+
+    return () => clearInterval(timer);
+  }, [hasPendingTransactions, refreshDocuments]);
+
+  useEffect(() => {
+    const onVisibilityOrFocus = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      void refreshDocuments({ silent: true });
+    };
+
+    window.addEventListener("focus", onVisibilityOrFocus);
+    document.addEventListener("visibilitychange", onVisibilityOrFocus);
+
+    return () => {
+      window.removeEventListener("focus", onVisibilityOrFocus);
+      document.removeEventListener("visibilitychange", onVisibilityOrFocus);
+    };
+  }, [refreshDocuments]);
+
+  async function handleManualRefresh() {
+    if (isManualRefreshing) {
+      return;
+    }
+
+    setIsManualRefreshing(true);
+    try {
+      await refreshDocuments({ silent: false });
+      toast.success("Documents refreshed.");
+    } catch (error) {
+      toast.error(error?.message || "Unable to refresh documents.");
+    } finally {
+      setIsManualRefreshing(false);
+    }
+  }
 
   async function handleCopy(value, label) {
     if (!value) {
@@ -241,29 +297,40 @@ export default function MyDocuments() {
               User-isolated records with realtime filtering, proof exports, and direct verification actions.
             </p>
           </div>
-          <div className="inline-flex rounded-xl border border-white/15 bg-white/[0.04] p-1">
-            <button
-              type="button"
-              onClick={() => setViewMode("grid")}
-              className={[
-                "inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-semibold transition",
-                viewMode === "grid" ? "bg-violet-500/25 text-violet-200" : "text-gray-300",
-              ].join(" ")}
+          <div className="flex items-center gap-2">
+            <Button
+              variant="cyan"
+              onClick={handleManualRefresh}
+              disabled={isManualRefreshing || isDocumentsLoading}
+              className="px-3 py-2 text-xs"
             >
-              <Grid3X3 size={14} />
-              Grid
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode("list")}
-              className={[
-                "inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-semibold transition",
-                viewMode === "list" ? "bg-violet-500/25 text-violet-200" : "text-gray-300",
-              ].join(" ")}
-            >
-              <List size={14} />
-              List
-            </button>
+              <RefreshCw size={14} className={isManualRefreshing ? "animate-spin" : ""} />
+              Refresh
+            </Button>
+            <div className="inline-flex rounded-xl border border-white/15 bg-white/[0.04] p-1">
+              <button
+                type="button"
+                onClick={() => setViewMode("grid")}
+                className={[
+                  "inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-semibold transition",
+                  viewMode === "grid" ? "bg-violet-500/25 text-violet-200" : "text-gray-300",
+                ].join(" ")}
+              >
+                <Grid3X3 size={14} />
+                Grid
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("list")}
+                className={[
+                  "inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-semibold transition",
+                  viewMode === "list" ? "bg-violet-500/25 text-violet-200" : "text-gray-300",
+                ].join(" ")}
+              >
+                <List size={14} />
+                List
+              </button>
+            </div>
           </div>
         </div>
       </Card>
