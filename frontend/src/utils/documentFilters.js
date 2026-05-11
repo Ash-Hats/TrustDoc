@@ -56,7 +56,7 @@ export function normalizeDocumentFilters(filters = {}) {
 }
 
 function buildTamperedHashSet(verificationHistory = []) {
-  const tamperedStatuses = new Set(["tampered", "revoked", "failed", "not-found"]);
+  const tamperedStatuses = new Set(["tampered", "revoked"]);
   const hashes = new Set();
 
   for (const item of verificationHistory) {

@@ -112,12 +112,7 @@ export default function Sidebar({
           })}
         </nav>
 
-        <div className="space-y-3 border-t border-white/10 p-3">
-          <div className="rounded-2xl border border-white/12 bg-white/[0.04] p-3">
-            <p className="text-xs text-gray-400">
-              Wallet and account controls are now in Settings for a cleaner workspace.
-            </p>
-          </div>
+        <div className="border-t border-white/10 p-3">
           <button
             type="button"
             onClick={onToggleCollapse}

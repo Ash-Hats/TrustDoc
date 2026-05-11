@@ -27,17 +27,11 @@ const DOCUMENT_EVENT_POLL_INTERVAL_MS = 15000;
 const DOCUMENT_EVENT_BOOTSTRAP_LOOKBACK_BLOCKS = 6;
 const DOCUMENT_EVENT_QUERY_STEP = 3500;
 
-const DEFAULT_GAS_OVERRIDES = {
-  gasLimit: 500000n,
-  maxFeePerGas: ethers.parseUnits("50", "gwei"),
-  maxPriorityFeePerGas: ethers.parseUnits("30", "gwei"),
-};
-
-const RETRY_GAS_OVERRIDES = {
-  gasLimit: 650000n,
-  maxFeePerGas: ethers.parseUnits("80", "gwei"),
-  maxPriorityFeePerGas: ethers.parseUnits("45", "gwei"),
-};
+const REGISTER_GAS_BUFFER_BPS = 12000n;
+const REGISTER_GAS_BPS_SCALE = 10000n;
+const REGISTER_GAS_LIMIT_FALLBACK = 320000n;
+const REGISTER_GAS_LIMIT_CEILING = 900000n;
+const TX_CONFIRMATION_TIMEOUT_MS = 180000;
 
 const ABI = [
   "function registerDocument(bytes32 _hash, string _cid, string _docType, string _issuedBy)",
@@ -62,6 +56,31 @@ function logDebug(...args) {
 
 function logWarn(...args) {
   console.warn("[trustdoc:blockchain]", ...args);
+}
+
+function resetBrowserProviderSingleton() {
+  browserProviderSingleton = null;
+  browserProviderSource = null;
+}
+
+function shouldResetProvider(error) {
+  const message = [
+    error?.shortMessage,
+    error?.reason,
+    error?.info?.error?.message,
+    error?.info?.message,
+    error?.message,
+    error?.cause?.message,
+  ]
+    .filter(Boolean)
+    .join(" | ")
+    .toLowerCase();
+
+  return /(provider destroyed|cancelled request|disconnected|provider is destroyed|disconnected from chain)/i.test(message);
+}
+
+function shouldRetryWalletRpc(error) {
+  return shouldResetProvider(error);
 }
 
 function getBrowserWindow() {
@@ -147,6 +166,7 @@ function extractErrorMessage(error, fallback) {
     error?.shortMessage ||
     error?.reason ||
     error?.info?.error?.message ||
+    error?.info?.message ||
     error?.message ||
     fallback;
 
@@ -158,12 +178,24 @@ function extractErrorMessage(error, fallback) {
     return "Transaction rejected in MetaMask.";
   }
 
+  if (/insufficient funds|insufficient balance|insufficient pol/i.test(message)) {
+    return "Insufficient POL balance to pay gas fees on Polygon Amoy.";
+  }
+
+  if (/execution reverted|call exception|revert/i.test(message)) {
+    return "Transaction reverted on-chain. Recheck contract inputs and registration state.";
+  }
+
+  if (/unsupported operation|cannot sign|missing signer|sendtransaction/i.test(message)) {
+    return "Wallet signing is unavailable. Reconnect MetaMask and retry.";
+  }
+
   if (/network changed|chain|wrong network/i.test(message)) {
     return "Please switch MetaMask to Polygon Amoy and try again.";
   }
 
   if (isRetryableGasError(error)) {
-    return "Network gas pricing changed quickly. Please retry in a moment.";
+    return "Gas pricing changed quickly on network. Retrying with updated estimate may help.";
   }
 
   return message;
@@ -206,14 +238,23 @@ export async function requestWalletRpc(method, params = []) {
     return walletRequestCache.get(requestKey);
   }
 
-  const requestPromise = ethereum
-    .request({ method, params: normalizedParams })
-    .catch((error) => {
-      throw error;
-    })
-    .finally(() => {
-      walletRequestCache.delete(requestKey);
-    });
+  const requestPromise = (async () => {
+    try {
+      return await ethereum.request({ method, params: normalizedParams });
+    } catch (error) {
+      if (shouldResetProvider(error)) {
+        resetBrowserProviderSingleton();
+      }
+
+      if (!shouldRetryWalletRpc(error)) {
+        throw error;
+      }
+
+      return ethereum.request({ method, params: normalizedParams });
+    }
+  })().finally(() => {
+    walletRequestCache.delete(requestKey);
+  });
 
   walletRequestCache.set(requestKey, requestPromise);
   return requestPromise;
@@ -493,17 +534,83 @@ async function getWriteContract({ enforceNetwork = true } = {}) {
   return chainContract;
 }
 
+function assertShortString(value, fieldName, maxLength) {
+  const normalized = String(value || "").trim();
+
+  if (!normalized) {
+    return "";
+  }
+
+  if (normalized.length > maxLength) {
+    throw new Error(`${fieldName} must be at most ${maxLength} characters.`);
+  }
+
+  return normalized;
+}
+
 function getRegisterArgs({ hashHex, cid, docType, issuedBy }) {
-  if (!cid?.trim()) {
+  const normalizedCid = String(cid || "").trim();
+  if (!normalizedCid) {
     throw new Error("CID is required for on-chain registration");
   }
 
+  const normalizedDocType = assertShortString(docType || "General", "Document type", 40) || "General";
+  const normalizedIssuedBy = assertShortString(issuedBy || "Unknown", "Issuer name", 120) || "Unknown";
+
   return [
     normalizeHash(hashHex),
-    cid.trim(),
-    docType?.trim() || "General",
-    issuedBy?.trim() || "Unknown",
+    normalizedCid,
+    normalizedDocType,
+    normalizedIssuedBy,
   ];
+}
+
+function mergeTxOverrides(baseOverrides = {}, txOverrides = {}) {
+  return {
+    ...(baseOverrides || {}),
+    ...(txOverrides || {}),
+  };
+}
+
+function capGasLimit(gasLimit) {
+  if (gasLimit <= 0n) {
+    return REGISTER_GAS_LIMIT_FALLBACK;
+  }
+
+  if (gasLimit > REGISTER_GAS_LIMIT_CEILING) {
+    return REGISTER_GAS_LIMIT_CEILING;
+  }
+
+  return gasLimit;
+}
+
+async function buildRegisterTxOverrides(contract, args, txOverrides = {}) {
+  const userOverrides = txOverrides || {};
+  const hasCustomGasLimit = userOverrides.gasLimit !== undefined && userOverrides.gasLimit !== null;
+
+  if (hasCustomGasLimit) {
+    return mergeTxOverrides({}, userOverrides);
+  }
+
+  let estimatedGas = null;
+
+  try {
+    estimatedGas = await contract.registerDocument.estimateGas(...args, userOverrides);
+  } catch (error) {
+    logWarn("Gas estimation failed for registerDocument, using fallback gas limit.", error);
+  }
+
+  const bufferedEstimate =
+    estimatedGas && estimatedGas > 0n
+      ? capGasLimit((estimatedGas * REGISTER_GAS_BUFFER_BPS) / REGISTER_GAS_BPS_SCALE)
+      : REGISTER_GAS_LIMIT_FALLBACK;
+
+  return mergeTxOverrides(
+    {
+      gasLimit: bufferedEstimate,
+    },
+    userOverrides
+  );
 }
 
 async function resolveRegistrationDetails(contract, provider, normalizedHash) {
@@ -776,7 +883,7 @@ export function subscribeToDocumentEvents({
   };
 }
 
-export async function waitForTransactionConfirmation(txHash, { timeoutMs = 180000 } = {}) {
+export async function waitForTransactionConfirmation(txHash, { timeoutMs = TX_CONFIRMATION_TIMEOUT_MS } = {}) {
   if (!txHash) {
     throw new Error("Transaction hash is required.");
   }
@@ -797,6 +904,9 @@ export async function waitForTransactionConfirmation(txHash, { timeoutMs = 18000
           return receipt;
         }
       } catch (error) {
+        if (/reverted on-chain/i.test(error?.message || "")) {
+          throw error;
+        }
         latestError = error;
       }
     }
@@ -807,6 +917,42 @@ export async function waitForTransactionConfirmation(txHash, { timeoutMs = 18000
   throw new Error(
     extractErrorMessage(latestError, "Transaction confirmation timed out. Please check explorer.")
   );
+}
+
+async function waitForSubmittedTransaction(txResponse, { timeoutMs = TX_CONFIRMATION_TIMEOUT_MS } = {}) {
+  if (!txResponse?.hash) {
+    throw new Error("Transaction hash is missing from wallet response.");
+  }
+
+  try {
+    const receipt = await txResponse.wait(1, timeoutMs);
+
+    if (!receipt) {
+      return waitForTransactionConfirmation(txResponse.hash, { timeoutMs });
+    }
+
+    if (receipt.status === 0n || receipt.status === 0) {
+      throw new Error("Transaction reverted on-chain.");
+    }
+
+    return receipt;
+  } catch (error) {
+    const replacementHash = error?.replacement?.hash;
+    if (replacementHash) {
+      if (error?.cancelled) {
+        throw new Error("Transaction was cancelled in wallet before confirmation.", {
+          cause: error,
+        });
+      }
+      return waitForTransactionConfirmation(replacementHash, { timeoutMs });
+    }
+
+    if (/timeout|not mined/i.test(error?.message || "")) {
+      return waitForTransactionConfirmation(txResponse.hash, { timeoutMs });
+    }
+
+    throw error;
+  }
 }
 
 export async function registerDocumentOnChain({
@@ -820,23 +966,30 @@ export async function registerDocumentOnChain({
   const contract = await getWriteContract();
   const args = getRegisterArgs({ hashHex, cid, docType, issuedBy });
 
-  const initialOverrides = {
-    ...(txOverrides || {}),
-    ...DEFAULT_GAS_OVERRIDES,
-  };
+  try {
+    await contract.registerDocument.staticCall(...args, txOverrides || {});
+  } catch (error) {
+    throw new Error(
+      extractErrorMessage(error, "Document registration would revert on-chain."),
+      { cause: error }
+    );
+  }
+
+  const initialOverrides = await buildRegisterTxOverrides(contract, args, txOverrides);
+  let usedOverrides = initialOverrides;
+
+  let txResponse = null;
 
   try {
-    const tx = await contract.registerDocument(...args, initialOverrides);
-    logDebug("Submitted registerDocument transaction.", { hash: tx.hash });
-
-    return {
-      txHash: tx.hash,
-      waitForConfirmation: () => waitForTransactionConfirmation(tx.hash),
-    };
+    txResponse = await contract.registerDocument(...args, initialOverrides);
+    logDebug("Submitted registerDocument transaction.", {
+      hash: txResponse.hash,
+      gasLimit: initialOverrides?.gasLimit?.toString?.() || initialOverrides?.gasLimit,
+    });
   } catch (error) {
     if (!isRetryableGasError(error)) {
       throw new Error(
-        extractErrorMessage(error, "Failed to register document on-chain"),
+        extractErrorMessage(error, "Failed to register document on-chain."),
         { cause: error }
       );
     }
@@ -846,23 +999,32 @@ export async function registerDocumentOnChain({
     }
 
     try {
-      const retryOverrides = {
-        ...(txOverrides || {}),
-        ...RETRY_GAS_OVERRIDES,
-      };
-
-      const retryTx = await contract.registerDocument(...args, retryOverrides);
-      logDebug("Retry transaction submitted.", { hash: retryTx.hash });
-
-      return {
-        txHash: retryTx.hash,
-        waitForConfirmation: () => waitForTransactionConfirmation(retryTx.hash),
-      };
+      const retryOverrides = await buildRegisterTxOverrides(contract, args, txOverrides);
+      txResponse = await contract.registerDocument(...args, retryOverrides);
+      usedOverrides = retryOverrides;
+      logDebug("Retry registerDocument transaction submitted.", {
+        hash: txResponse.hash,
+        gasLimit: retryOverrides?.gasLimit?.toString?.() || retryOverrides?.gasLimit,
+      });
     } catch (retryError) {
       throw new Error(
-        extractErrorMessage(retryError, "Failed to register document on-chain"),
+        extractErrorMessage(retryError, "Failed to register document on-chain."),
         { cause: retryError }
       );
     }
   }
+
+  if (!txResponse?.hash) {
+    throw new Error("Wallet did not return a transaction hash.");
+  }
+
+  const resolvedHash = txResponse.hash;
+  return {
+    txHash: resolvedHash,
+    gasLimit: usedOverrides?.gasLimit || null,
+    waitForConfirmation: (options = {}) =>
+      waitForSubmittedTransaction(txResponse, {
+        timeoutMs: options.timeoutMs || TX_CONFIRMATION_TIMEOUT_MS,
+      }),
+  };
 }

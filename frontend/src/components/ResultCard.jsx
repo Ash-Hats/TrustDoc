@@ -2,6 +2,7 @@ import { AlertTriangle, BadgeCheck, ExternalLink, ShieldAlert, Timer } from "luc
 import { formatTimestamp } from "../utils/format";
 import Button from "./ui/Button";
 import { buildTxUrl } from "../utils/explorer";
+import { normalizeHashOrEmpty } from "../utils/hashUtils";
 
 const STATUS_CONFIG = {
   verified: {
@@ -57,8 +58,14 @@ export default function ResultCard({
   const Icon = config.icon;
   const { chainResult, metadata, details } = result;
 
-  const metadataHash = metadata?.fileHash ? `0x${metadata.fileHash}` : "Unavailable";
+  const normalizedMetadataHash = normalizeHashOrEmpty(metadata?.fileHash);
+  const metadataHash = normalizedMetadataHash || "Unavailable";
   const comparedInputHash = hash ? (hash.startsWith("0x") ? hash : `0x${hash}`) : "Unavailable";
+  const signatureStatus = details.signatureProvided
+    ? details.signatureValid
+      ? "Valid"
+      : "Invalid"
+    : "Not Provided";
 
   return (
     <section className={["rounded-2xl border p-5 shadow-sm transition sm:p-6", config.cardClass].join(" ")}>
@@ -79,7 +86,7 @@ export default function ResultCard({
 
       <div className="mt-5 grid gap-3 sm:grid-cols-2">
         <InfoRow label="Issuer" value={chainResult?.issuedBy || metadata?.issuedBy || "-"} />
-        <InfoRow label="Signature Status" value={details.signatureValid ? "Valid" : "Invalid"} />
+        <InfoRow label="Signature Status" value={signatureStatus} />
         <InfoRow label="Wallet Address" value={chainResult?.owner || "-"} mono />
         <InfoRow label="Timestamp" value={formatTimestamp(chainResult?.timestamp)} />
         <InfoRow label="Input Hash" value={comparedInputHash} mono />

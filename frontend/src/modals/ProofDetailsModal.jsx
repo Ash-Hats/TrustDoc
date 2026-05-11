@@ -14,7 +14,15 @@ export default function ProofDetailsModal({
     return null;
   }
 
-  const { chainResult, metadata, confidenceScore, issuerMatches, timestampValid, signatureValid } = data;
+  const {
+    chainResult,
+    metadata,
+    confidenceScore,
+    issuerMatches,
+    timestampValid,
+    signatureValid,
+    signatureProvided,
+  } = data;
 
   return (
     <div className="fixed inset-0 z-[65] flex items-end justify-center bg-slate-950/65 p-4 backdrop-blur-sm sm:items-center">
@@ -47,18 +55,20 @@ export default function ProofDetailsModal({
           />
           <Step
             title="Signature Validation"
-            value={signatureValid ? "Valid" : "Invalid"}
-            valid={Boolean(signatureValid)}
+            value={
+              signatureProvided ? (signatureValid ? "Valid" : "Invalid") : "Not Provided"
+            }
+            status={signatureProvided ? (signatureValid ? "valid" : "invalid") : "neutral"}
           />
           <Step
             title="Issuer Validation"
             value={issuerMatches ? "Matched" : "Mismatch"}
-            valid={Boolean(issuerMatches)}
+            status={issuerMatches ? "valid" : "invalid"}
           />
           <Step
             title="Timestamp Validation"
             value={timestampValid ? "Valid" : "Suspicious"}
-            valid={Boolean(timestampValid)}
+            status={timestampValid ? "valid" : "invalid"}
           />
         </div>
 
@@ -110,13 +120,17 @@ export default function ProofDetailsModal({
   );
 }
 
-function Step({ title, value, valid }) {
+function Step({ title, value, status = "invalid" }) {
+  const statusClass =
+    status === "valid"
+      ? "border-emerald-300/25 bg-emerald-500/10"
+      : status === "neutral"
+        ? "border-amber-300/25 bg-amber-500/10"
+        : "border-rose-300/25 bg-rose-500/10";
+
   return (
     <div
-      className={[
-        "rounded-xl border p-3",
-        valid ? "border-emerald-300/25 bg-emerald-500/10" : "border-rose-300/25 bg-rose-500/10",
-      ].join(" ")}
+      className={["rounded-xl border p-3", statusClass].join(" ")}
     >
       <p className="text-[11px] uppercase tracking-wide text-gray-300">{title}</p>
       <p className="mt-1 text-sm font-semibold text-gray-100">{value}</p>

@@ -6,6 +6,7 @@ import { hashFile } from "../utils/hashFile";
 import { verifyDocumentOnChain } from "../utils/contract";
 import { fetchMetadata } from "../services/documentService";
 import { buildVerificationConfidence } from "../services/documentService";
+import { normalizeHash, normalizeHashOrEmpty, rawHash } from "../utils/hashUtils";
 import ResultCard from "./ResultCard";
 import { useAppContext } from "../context/AppContext";
 import ProofDetailsModal from "../modals/ProofDetailsModal";
@@ -26,35 +27,50 @@ export default function DragDropVerify({ verifySignature, initialHash = "" }) {
   const initialHashInvalid = Boolean(initialHash) && !/^[0-9a-fA-F]{64}$/.test(normalizedInitialHash);
 
   const runVerification = useCallback(
-    async (rawHash, sourceFileName = "") => {
+    async (rawHashInput, sourceFileName = "") => {
       setIsLoading(true);
       setError("");
       setResult(null);
-      setHash(rawHash.startsWith("0x") ? rawHash.slice(2) : rawHash);
+      setHash(rawHashInput.startsWith("0x") ? rawHashInput.slice(2) : rawHashInput);
       setMetadata(null);
       setFileName(sourceFileName);
       setVerdict("not-found");
 
       try {
-        const chainResult = await verifyDocumentOnChain(rawHash);
+        const normalizedInputHex = normalizeHash(rawHashInput);
+        const normalizedInputRaw = rawHash(normalizedInputHex);
+        setHash(normalizedInputRaw);
+        const chainResult = await verifyDocumentOnChain(normalizedInputHex);
         const fetchedMetadata = chainResult?.gatewayUrl
           ? await fetchMetadata(chainResult.gatewayUrl).catch(() => null)
           : null;
 
-        const normalizedHash = rawHash.startsWith("0x") ? rawHash.slice(2).toLowerCase() : rawHash.toLowerCase();
-        const metadataHash = fetchedMetadata?.fileHash?.toLowerCase() || "";
-        const hashMatches = Boolean(metadataHash && metadataHash === normalizedHash);
-        const signatureValid = Boolean(
-          fetchedMetadata?.fileHash &&
-            fetchedMetadata?.signature &&
-            fetchedMetadata?.signer &&
-            verifySignature(fetchedMetadata.fileHash, fetchedMetadata.signature, fetchedMetadata.signer)
+        const metadataHashProvided = Boolean(String(fetchedMetadata?.fileHash || "").trim());
+        const normalizedMetadataHashHex = normalizeHashOrEmpty(fetchedMetadata?.fileHash);
+        const normalizedMetadataHashRaw = normalizedMetadataHashHex ? rawHash(normalizedMetadataHashHex) : "";
+        const hashMatches = metadataHashProvided
+          ? normalizedMetadataHashRaw === normalizedInputRaw
+          : true;
+
+        const signatureProvided = Boolean(
+          normalizedMetadataHashHex && fetchedMetadata?.signature && fetchedMetadata?.signer
         );
-        const issuerMatches = Boolean(
-          fetchedMetadata?.issuedBy &&
-            chainResult?.issuedBy &&
-            fetchedMetadata.issuedBy.toLowerCase() === chainResult.issuedBy.toLowerCase()
-        );
+        const signatureValid = signatureProvided
+          ? verifySignature(
+              normalizedMetadataHashHex,
+              fetchedMetadata.signature,
+              fetchedMetadata.signer
+            )
+          : null;
+        const signatureMismatch = signatureProvided && !signatureValid;
+
+        const issuerProvided = Boolean(String(fetchedMetadata?.issuedBy || "").trim());
+        const issuerMatches = issuerProvided
+          ? Boolean(
+              chainResult?.issuedBy &&
+                fetchedMetadata.issuedBy.toLowerCase() === chainResult.issuedBy.toLowerCase()
+            )
+          : true;
         const timestampValid =
           Number(chainResult?.timestamp || 0) > 0 &&
           Number(chainResult?.timestamp || 0) * 1000 <= Date.now() + 60000;
@@ -62,14 +78,15 @@ export default function DragDropVerify({ verifySignature, initialHash = "" }) {
         const confidenceScore = buildVerificationConfidence({
           exists: chainResult.exists,
           revoked: chainResult.revoked,
-          signatureValid,
+          signatureValid: signatureProvided ? Boolean(signatureValid) : true,
+          signatureProvided,
           issuerValid: issuerMatches,
           timestampValid,
         });
 
         const tampered =
           chainResult.exists &&
-          (!signatureValid || !hashMatches || (fetchedMetadata?.issuedBy ? !issuerMatches : false));
+          (!hashMatches || signatureMismatch || (issuerProvided ? !issuerMatches : false));
 
         let status = "not-found";
         if (!chainResult.exists) {
@@ -88,6 +105,7 @@ export default function DragDropVerify({ verifySignature, initialHash = "" }) {
           metadata: fetchedMetadata,
           details: {
             signatureValid,
+            signatureProvided,
             hashMatches,
             issuerMatches,
             timestampValid,
@@ -102,7 +120,7 @@ export default function DragDropVerify({ verifySignature, initialHash = "" }) {
         addVerificationRecord({
           source: "verify",
           status,
-          hash: chainResult?.hash || `0x${normalizedHash}`,
+          hash: chainResult?.hash || normalizedInputHex,
           issuer: chainResult?.issuedBy || fetchedMetadata?.issuedBy || "Unknown",
           txHash: chainResult?.txHash || "",
           confidenceScore,
@@ -249,6 +267,7 @@ export default function DragDropVerify({ verifySignature, initialHash = "" }) {
                 issuerMatches: result.details.issuerMatches,
                 timestampValid: result.details.timestampValid,
                 signatureValid: result.details.signatureValid,
+                signatureProvided: result.details.signatureProvided,
               }
             : null
         }

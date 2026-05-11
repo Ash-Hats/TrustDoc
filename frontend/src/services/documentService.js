@@ -59,7 +59,14 @@ export async function verifyDocumentWithMetadata(hashHex) {
   };
 }
 
-export function buildVerificationConfidence({ exists, revoked, signatureValid, issuerValid, timestampValid }) {
+export function buildVerificationConfidence({
+  exists,
+  revoked,
+  signatureValid,
+  signatureProvided = true,
+  issuerValid,
+  timestampValid,
+}) {
   if (!exists) {
     return 0;
   }
@@ -67,7 +74,7 @@ export function buildVerificationConfidence({ exists, revoked, signatureValid, i
   const score =
     (exists ? 40 : 0) +
     (!revoked ? 20 : 0) +
-    (signatureValid ? 20 : 0) +
+    (signatureProvided ? (signatureValid ? 20 : 0) : 10) +
     (issuerValid ? 10 : 0) +
     (timestampValid ? 10 : 0);
 

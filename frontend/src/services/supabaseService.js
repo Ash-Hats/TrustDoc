@@ -75,7 +75,7 @@ async function request(
   const url = `${buildUrl(path)}${toQueryString(query)}`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  let response = null;
+  let response;
 
   try {
     response = await fetch(url, {
@@ -93,7 +93,7 @@ async function request(
     });
   } catch (error) {
     if (error?.name === "AbortError") {
-      throw new Error("Supabase request timed out.");
+      throw new Error("Supabase request timed out.", { cause: error });
     }
     throw error;
   } finally {

@@ -987,9 +987,12 @@ export function AppProvider({ children }) {
   );
 
   const resolvePendingTransaction = useCallback(
-    async (txHash, { successMessage = "Transaction confirmed." } = {}) => {
+    async (txHash, { successMessage = "Transaction confirmed.", waitForConfirmation } = {}) => {
       try {
-        const receipt = await waitForTransactionConfirmation(txHash);
+        const receipt =
+          typeof waitForConfirmation === "function"
+            ? await waitForConfirmation()
+            : await waitForTransactionConfirmation(txHash);
         setPendingTransactions((previous) =>
           previous.map((item) =>
             item.txHash === txHash

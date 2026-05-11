@@ -4,9 +4,8 @@ pragma solidity ^0.8.20;
 contract DocumentRegistry {
 
     struct Document {
-        bytes32 hash;
         address owner;
-        uint256 timestamp;
+        uint64 timestamp;
         string ipfsCID;
         string docType;
         string issuedBy;
@@ -30,21 +29,20 @@ contract DocumentRegistry {
 
     function registerDocument(
         bytes32 _hash,
-        string memory _cid,
-        string memory _docType,
-        string memory _issuedBy
+        string calldata _cid,
+        string calldata _docType,
+        string calldata _issuedBy
     ) public {
         require(documents[_hash].timestamp == 0, "Already exists");
 
-        documents[_hash] = Document(
-            _hash,
-            msg.sender,
-            block.timestamp,
-            _cid,
-            _docType,
-            _issuedBy,
-            false
-        );
+        documents[_hash] = Document({
+            owner: msg.sender,
+            timestamp: uint64(block.timestamp),
+            ipfsCID: _cid,
+            docType: _docType,
+            issuedBy: _issuedBy,
+            revoked: false
+        });
 
         ownerDocs[msg.sender].push(_hash);
 
@@ -70,7 +68,7 @@ contract DocumentRegistry {
         return (
             true,
             doc.owner,
-            doc.timestamp,
+            uint256(doc.timestamp),
             doc.issuedBy,
             doc.revoked
         );
