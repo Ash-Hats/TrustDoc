@@ -27,11 +27,35 @@ const DOCUMENT_EVENT_POLL_INTERVAL_MS = 15000;
 const DOCUMENT_EVENT_BOOTSTRAP_LOOKBACK_BLOCKS = 6;
 const DOCUMENT_EVENT_QUERY_STEP = 3500;
 
+const DEFAULT_MIN_PRIORITY_FEE_GWEI = "30";
+const MIN_PRIORITY_FEE_GWEI = String(
+  import.meta.env.VITE_MIN_PRIORITY_FEE_GWEI || DEFAULT_MIN_PRIORITY_FEE_GWEI
+).trim();
+
 const REGISTER_GAS_BUFFER_BPS = 12000n;
 const REGISTER_GAS_BPS_SCALE = 10000n;
 const REGISTER_GAS_LIMIT_FALLBACK = 320000n;
 const REGISTER_GAS_LIMIT_CEILING = 900000n;
 const TX_CONFIRMATION_TIMEOUT_MS = 180000;
+const MAX_FEE_FROM_PRIORITY_MULTIPLIER = 2n;
+
+function parsePositiveGweiToWei(rawValue, fallbackGwei = DEFAULT_MIN_PRIORITY_FEE_GWEI) {
+  try {
+    const parsed = ethers.parseUnits(String(rawValue || "").trim(), "gwei");
+    if (parsed > 0n) {
+      return parsed;
+    }
+  } catch {
+    // fallback below
+  }
+
+  return ethers.parseUnits(String(fallbackGwei), "gwei");
+}
+
+const MIN_PRIORITY_FEE_WEI = parsePositiveGweiToWei(
+  MIN_PRIORITY_FEE_GWEI,
+  DEFAULT_MIN_PRIORITY_FEE_GWEI
+);
 
 const ABI = [
   "function registerDocument(bytes32 _hash, string _cid, string _docType, string _issuedBy)",
@@ -176,6 +200,10 @@ function extractErrorMessage(error, fallback) {
 
   if (/user rejected|rejected the request|action rejected/i.test(message)) {
     return "Transaction rejected in MetaMask.";
+  }
+
+  if (/underpriced|tip cap.*below minimum|minimum needed|min.?gas.?tip/i.test(message)) {
+    return "Gas tip was below Polygon minimum. Retrying with a higher priority fee should fix this.";
   }
 
   if (/insufficient funds|insufficient balance|insufficient pol/i.test(message)) {
@@ -565,13 +593,6 @@ function getRegisterArgs({ hashHex, cid, docType, issuedBy }) {
   ];
 }
 
-function mergeTxOverrides(baseOverrides = {}, txOverrides = {}) {
-  return {
-    ...(baseOverrides || {}),
-    ...(txOverrides || {}),
-  };
-}
-
 function capGasLimit(gasLimit) {
   if (gasLimit <= 0n) {
     return REGISTER_GAS_LIMIT_FALLBACK;
@@ -584,33 +605,123 @@ function capGasLimit(gasLimit) {
   return gasLimit;
 }
 
+function toBigIntOrNull(value) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  try {
+    if (typeof value === "bigint") {
+      return value;
+    }
+
+    if (typeof value === "number") {
+      return BigInt(Math.trunc(value));
+    }
+
+    if (typeof value === "string") {
+      const normalized = value.trim();
+      if (!normalized) {
+        return null;
+      }
+      return BigInt(normalized);
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function maxBigInt(values = []) {
+  const normalized = values
+    .map((entry) => toBigIntOrNull(entry))
+    .filter((entry) => typeof entry === "bigint");
+
+  if (!normalized.length) {
+    return 0n;
+  }
+
+  return normalized.reduce((currentMax, value) => (value > currentMax ? value : currentMax), 0n);
+}
+
+async function buildRegisterFeeOverrides(contract, userOverrides = {}) {
+  const hasCustomGasPrice = userOverrides.gasPrice !== undefined && userOverrides.gasPrice !== null;
+  const hasCustomPriorityFee =
+    userOverrides.maxPriorityFeePerGas !== undefined && userOverrides.maxPriorityFeePerGas !== null;
+  const hasCustomMaxFee = userOverrides.maxFeePerGas !== undefined && userOverrides.maxFeePerGas !== null;
+
+  const runnerProvider = contract?.runner?.provider;
+  const feeData = runnerProvider?.getFeeData ? await runnerProvider.getFeeData().catch(() => null) : null;
+  const latestBlock = runnerProvider?.getBlock
+    ? await runnerProvider.getBlock("latest").catch(() => null)
+    : null;
+
+  const minimumPriorityFee = MIN_PRIORITY_FEE_WEI;
+  const networkPriorityFee = maxBigInt([
+    feeData?.maxPriorityFeePerGas,
+    hasCustomPriorityFee ? userOverrides.maxPriorityFeePerGas : null,
+    minimumPriorityFee,
+  ]);
+
+  const blockBaseFee = maxBigInt([latestBlock?.baseFeePerGas]);
+  const recommendedMaxFeeFromBase =
+    blockBaseFee > 0n
+      ? blockBaseFee * MAX_FEE_FROM_PRIORITY_MULTIPLIER + networkPriorityFee
+      : networkPriorityFee * MAX_FEE_FROM_PRIORITY_MULTIPLIER;
+
+  const networkMaxFee = maxBigInt([
+    feeData?.maxFeePerGas,
+    hasCustomMaxFee ? userOverrides.maxFeePerGas : null,
+    recommendedMaxFeeFromBase,
+  ]);
+
+  if (hasCustomGasPrice) {
+    const normalizedGasPrice = maxBigInt([userOverrides.gasPrice, minimumPriorityFee]);
+    return {
+      gasPrice: normalizedGasPrice,
+    };
+  }
+
+  return {
+    maxPriorityFeePerGas: networkPriorityFee,
+    maxFeePerGas: networkMaxFee,
+  };
+}
+
 async function buildRegisterTxOverrides(contract, args, txOverrides = {}) {
   const userOverrides = txOverrides || {};
   const hasCustomGasLimit = userOverrides.gasLimit !== undefined && userOverrides.gasLimit !== null;
-
-  if (hasCustomGasLimit) {
-    return mergeTxOverrides({}, userOverrides);
-  }
-
   let estimatedGas = null;
 
-  try {
-    estimatedGas = await contract.registerDocument.estimateGas(...args, userOverrides);
-  } catch (error) {
-    logWarn("Gas estimation failed for registerDocument, using fallback gas limit.", error);
+  if (!hasCustomGasLimit) {
+    try {
+      estimatedGas = await contract.registerDocument.estimateGas(...args, userOverrides);
+    } catch (error) {
+      logWarn("Gas estimation failed for registerDocument, using fallback gas limit.", error);
+    }
   }
 
-  const bufferedEstimate =
-    estimatedGas && estimatedGas > 0n
+  const bufferedEstimate = hasCustomGasLimit
+    ? capGasLimit(maxBigInt([userOverrides.gasLimit]))
+    : estimatedGas && estimatedGas > 0n
       ? capGasLimit((estimatedGas * REGISTER_GAS_BUFFER_BPS) / REGISTER_GAS_BPS_SCALE)
       : REGISTER_GAS_LIMIT_FALLBACK;
 
-  return mergeTxOverrides(
-    {
-      gasLimit: bufferedEstimate,
-    },
-    userOverrides
-  );
+  const feeOverrides = await buildRegisterFeeOverrides(contract, userOverrides);
+
+  const nextOverrides = {
+    ...userOverrides,
+    gasLimit: bufferedEstimate,
+    ...feeOverrides,
+  };
+
+  if (nextOverrides.gasPrice !== undefined && nextOverrides.gasPrice !== null) {
+    delete nextOverrides.maxFeePerGas;
+    delete nextOverrides.maxPriorityFeePerGas;
+  }
+
+  return nextOverrides;
 }
 
 async function resolveRegistrationDetails(contract, provider, normalizedHash) {
