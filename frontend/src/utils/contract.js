@@ -301,9 +301,34 @@ export function getBrowserProvider() {
   return browserProviderSingleton;
 }
 
-export async function getWalletSigner() {
+export async function getWalletSigner({ requestIfMissing = true } = {}) {
+  const account = await getConnectedWallet({ requestIfMissing });
+  if (!account) {
+    throw new Error("No wallet account available.");
+  }
+
   const provider = getBrowserProvider();
-  return provider.getSigner();
+
+  try {
+    return await provider.getSigner(account);
+  } catch (error) {
+    if (!shouldResetProvider(error)) {
+      throw error;
+    }
+
+    resetBrowserProviderSingleton();
+    const retryProvider = getBrowserProvider();
+    return retryProvider.getSigner(account);
+  }
+}
+
+export async function getCurrentAddress({ requestIfMissing = false } = {}) {
+  return getConnectedWallet({ requestIfMissing });
+}
+
+export function disconnectWalletProviderSession() {
+  resetBrowserProviderSingleton();
+  walletRequestCache.clear();
 }
 
 function getReadProviders() {
@@ -532,7 +557,6 @@ export async function autoConnectWalletOnce({ requestIfMissing = false } = {}) {
 async function getWriteContract({ enforceNetwork = true } = {}) {
   validateSharedConfig();
 
-  const provider = getBrowserProvider();
   let connected = await requestWalletRpc("eth_accounts", []);
 
   if (!connected.length) {
@@ -551,7 +575,7 @@ async function getWriteContract({ enforceNetwork = true } = {}) {
     }
   }
 
-  const signer = await provider.getSigner();
+  const signer = await getWalletSigner({ requestIfMissing: false });
   const chainContract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
 
   const signerProvider = signer.provider;

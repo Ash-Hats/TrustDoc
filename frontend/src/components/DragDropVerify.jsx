@@ -12,6 +12,13 @@ import { useAppContext } from "../context/AppContext";
 import ProofDetailsModal from "../modals/ProofDetailsModal";
 import Card from "./ui/Card";
 
+function normalizeIssuerValue(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
 export default function DragDropVerify({ verifySignature, initialHash = "" }) {
   const { addVerificationRecord, settings } = useAppContext();
   const [fileName, setFileName] = useState("");
@@ -64,13 +71,14 @@ export default function DragDropVerify({ verifySignature, initialHash = "" }) {
           : null;
         const signatureMismatch = signatureProvided && !signatureValid;
 
-        const issuerProvided = Boolean(String(fetchedMetadata?.issuedBy || "").trim());
-        const issuerMatches = issuerProvided
-          ? Boolean(
-              chainResult?.issuedBy &&
-                fetchedMetadata.issuedBy.toLowerCase() === chainResult.issuedBy.toLowerCase()
-            )
-          : true;
+        const normalizedMetadataIssuer = normalizeIssuerValue(fetchedMetadata?.issuedBy || "");
+        const normalizedOnChainIssuer = normalizeIssuerValue(chainResult?.issuedBy || "");
+        const issuerProvided = Boolean(normalizedMetadataIssuer);
+        const onChainIssuerProvided = Boolean(normalizedOnChainIssuer);
+        const issuerMatches =
+          !issuerProvided || !onChainIssuerProvided
+            ? true
+            : normalizedMetadataIssuer === normalizedOnChainIssuer;
         const timestampValid =
           Number(chainResult?.timestamp || 0) > 0 &&
           Number(chainResult?.timestamp || 0) * 1000 <= Date.now() + 60000;
@@ -84,9 +92,8 @@ export default function DragDropVerify({ verifySignature, initialHash = "" }) {
           timestampValid,
         });
 
-        const tampered =
-          chainResult.exists &&
-          (!hashMatches || signatureMismatch || (issuerProvided ? !issuerMatches : false));
+        const issuerMismatch = issuerProvided && onChainIssuerProvided && !issuerMatches;
+        const tampered = chainResult.exists && (!hashMatches || signatureMismatch || issuerMismatch);
 
         let status = "not-found";
         if (!chainResult.exists) {

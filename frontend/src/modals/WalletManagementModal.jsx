@@ -14,11 +14,13 @@ import { shortAddress } from "../utils/format";
 import {
   AMOY_CHAIN_ID_DEC,
   AMOY_CHAIN_NAME,
-  getConnectedWallet,
-  getWalletChainId,
-  getWalletSigner,
   isAmoyChain,
 } from "../utils/contract";
+import {
+  getCurrentAddress,
+  getCurrentChainId,
+  getSigner,
+} from "../services/walletManager";
 
 function WalletManagementModal({ isOpen, onClose }) {
   const { user, session } = useAuth();
@@ -38,15 +40,21 @@ function WalletManagementModal({ isOpen, onClose }) {
   }, [session, user]);
 
   useEffect(() => {
-    if (isOpen) {
-      void fetchWallets();
+    if (!isOpen) {
+      return undefined;
     }
+
+    const timer = setTimeout(() => {
+      void fetchWallets();
+    }, 0);
+
+    return () => clearTimeout(timer);
   }, [fetchWallets, isOpen]);
 
   const handleConnectWallet = async () => {
     setConnecting(true);
     try {
-      const walletAddress = (await getConnectedWallet({ requestIfMissing: true })).toLowerCase();
+      const walletAddress = (await getCurrentAddress({ requestIfMissing: true })).toLowerCase();
       if (!walletAddress) {
         throw new Error("No account selected");
       }
@@ -58,13 +66,13 @@ function WalletManagementModal({ isOpen, onClose }) {
         return;
       }
 
-      const activeChainId = await getWalletChainId();
+      const activeChainId = await getCurrentChainId();
       if (!isAmoyChain(activeChainId)) {
         throw new Error(`Please switch wallet to ${AMOY_CHAIN_NAME} before connecting.`);
       }
 
       // Sign message for verification
-      const signer = await getWalletSigner();
+      const signer = await getSigner({ requestIfMissing: false });
 
       const message = [
         "TrustDoc Wallet Connection",

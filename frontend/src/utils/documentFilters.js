@@ -55,24 +55,6 @@ export function normalizeDocumentFilters(filters = {}) {
   };
 }
 
-function buildTamperedHashSet(verificationHistory = []) {
-  const tamperedStatuses = new Set(["tampered", "revoked"]);
-  const hashes = new Set();
-
-  for (const item of verificationHistory) {
-    if (!tamperedStatuses.has(item?.status)) {
-      continue;
-    }
-
-    const hash = normalizeHash(item?.hash);
-    if (hash) {
-      hashes.add(hash);
-    }
-  }
-
-  return hashes;
-}
-
 function buildPendingByHash(pendingTransactions = []) {
   const map = new Map();
 
@@ -94,7 +76,7 @@ function buildPendingByHash(pendingTransactions = []) {
 }
 
 export function enrichDocuments(documents = [], pendingTransactions = [], verificationHistory = []) {
-  const tamperedHashes = buildTamperedHashSet(verificationHistory);
+  void verificationHistory;
   const pendingByHash = buildPendingByHash(pendingTransactions);
 
   const index = new Map();
@@ -104,7 +86,7 @@ export function enrichDocuments(documents = [], pendingTransactions = [], verifi
     let derivedStatus = "verified";
     if (pendingByHash.has(normalizedHash)) {
       derivedStatus = "pending";
-    } else if (doc?.revoked || tamperedHashes.has(normalizedHash)) {
+    } else if (doc?.revoked) {
       derivedStatus = "tampered";
     }
 

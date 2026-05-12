@@ -138,37 +138,16 @@ export default function MyDocuments() {
   );
 
   useEffect(() => {
-    void refreshDocuments({ silent: true });
-  }, [refreshDocuments]);
-
-  useEffect(() => {
     if (!hasPendingTransactions) {
       return undefined;
     }
 
     const timer = setInterval(() => {
       void refreshDocuments({ silent: true });
-    }, 7000);
+    }, 12000);
 
     return () => clearInterval(timer);
   }, [hasPendingTransactions, refreshDocuments]);
-
-  useEffect(() => {
-    const onVisibilityOrFocus = () => {
-      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
-        return;
-      }
-      void refreshDocuments({ silent: true });
-    };
-
-    window.addEventListener("focus", onVisibilityOrFocus);
-    document.addEventListener("visibilitychange", onVisibilityOrFocus);
-
-    return () => {
-      window.removeEventListener("focus", onVisibilityOrFocus);
-      document.removeEventListener("visibilitychange", onVisibilityOrFocus);
-    };
-  }, [refreshDocuments]);
 
   async function handleManualRefresh() {
     if (isManualRefreshing) {

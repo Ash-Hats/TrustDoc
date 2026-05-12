@@ -1,4 +1,6 @@
+import { ethers } from "ethers";
 import { getConnectedWallet, requestWalletRpc } from "./contract";
+import { getSigner } from "../services/walletManager";
 
 export async function signHash(hash) {
   const normalizedHash = String(hash || "").replace(/^0x/, "");
@@ -12,10 +14,17 @@ export async function signHash(hash) {
     throw new Error("No wallet account available.");
   }
 
-  const signature = await requestWalletRpc("personal_sign", [
-    `0x${normalizedHash}`,
-    account,
-  ]);
+  const hashHex = `0x${normalizedHash}`;
+  const signature = await (async () => {
+    try {
+      const signer = await getSigner({ requestIfMissing: true });
+      return await signer.signMessage(ethers.getBytes(hashHex));
+    } catch (signerError) {
+      return requestWalletRpc("personal_sign", [hashHex, account]).catch(() => {
+        throw signerError;
+      });
+    }
+  })();
 
   return {
     signature,

@@ -11,14 +11,18 @@ import {
 import toast from "react-hot-toast";
 import {
   AMOY_CHAIN_NAME,
+  disconnectWalletProviderSession,
   ensureAmoyNetwork,
-  getConnectedWallet,
   getDocumentsByOwner,
-  getWalletChainId,
   isAmoyChain,
   subscribeToDocumentEvents,
   waitForTransactionConfirmation,
 } from "../utils/contract";
+import {
+  connectWallet as connectWalletWithManager,
+  getCurrentChainId,
+  subscribeWalletEvents,
+} from "../services/walletManager";
 import { shortAddress } from "../utils/format";
 import {
   clearSessionStorage,
@@ -810,7 +814,11 @@ export function AppProvider({ children }) {
         });
 
         try {
-          const account = await getConnectedWallet({ requestIfMissing });
+          const walletSnapshot = await connectWalletWithManager({
+            requestIfMissing,
+            autoSwitch,
+          });
+          const account = walletSnapshot.account;
 
           if (!account) {
             setDisconnectedState();
@@ -820,18 +828,17 @@ export function AppProvider({ children }) {
             return "";
           }
 
-          const networkResult = await ensureAmoyNetwork({ autoSwitch });
-          const supported = Boolean(networkResult.isSupported);
+          const supported = Boolean(walletSnapshot.isSupported);
 
           setWallet({
             account,
-            chainId: networkResult.chainId,
+            chainId: walletSnapshot.chainId,
             status: supported ? "connected" : "wrong-network",
             isConnecting: false,
             isSupportedNetwork: supported,
           });
 
-          setSessionStorage(sessionPayload(account, networkResult.chainId));
+          setSessionStorage(sessionPayload(account, walletSnapshot.chainId));
           seenDocumentEventsRef.current = new Set();
           lastUpsertFingerprintRef.current = "";
           lastLocalDocumentUpsertAtRef.current = 0;
@@ -844,7 +851,7 @@ export function AppProvider({ children }) {
                 severity: "medium",
                 description: "Wallet connected on unsupported chain.",
                 meta: {
-                  chainId: networkResult.chainId,
+                  chainId: walletSnapshot.chainId,
                   account: account.toLowerCase(),
                 },
               }).catch(() => null);
@@ -913,7 +920,7 @@ export function AppProvider({ children }) {
     [
       isAuthenticated,
       linkWallet,
-      profile?.wallet_address,
+      profile,
       pushActivity,
       refreshWalletSessions,
       refreshDocuments,
@@ -927,6 +934,7 @@ export function AppProvider({ children }) {
 
   const disconnectWallet = useCallback(() => {
     const activeAccount = wallet.account;
+    disconnectWalletProviderSession();
     clearSessionStorage();
     setSessionStorage({
       account: "",
@@ -1326,126 +1334,115 @@ export function AppProvider({ children }) {
   }, [scopeKey, settings.autoConnect]);
 
   useEffect(() => {
-    const browserWindow = typeof window === "undefined" ? null : window;
-    const ethereum = browserWindow?.ethereum;
-
-    if (!ethereum?.on) {
-      return undefined;
-    }
-
-    const onChainChanged = async (chainId) => {
-      try {
-        const supported = isAmoyChain(chainId);
-        const activeAccount = walletRef.current.account;
-
-        setWallet((previous) => {
-          return {
-            ...previous,
-            chainId,
-            status: previous.account ? (supported ? "connected" : "wrong-network") : "disconnected",
-            isSupportedNetwork: supported,
-          };
-        });
-
-        if (!supported) {
-          setShowWrongNetworkModal(true);
-          return;
-        }
-
-        setShowWrongNetworkModal(false);
-
-        if (!activeAccount) {
-          return;
-        }
-
-        pushActivityRef.current?.({
-          type: "wallet",
-          title: "Network Changed",
-          description: "Wallet switched network.",
-        });
-
-        const runtime = listenerContextRef.current;
-        if (runtime.remoteEnabled && runtime.accessToken && runtime.userId) {
-          await updateWalletActivity(runtime.accessToken, runtime.userId, activeAccount).catch(() => null);
-        }
-
-        await refreshDocumentsRef.current?.({ silent: true });
-        await loadRemoteWorkspaceStateRef.current?.();
-      } catch (error) {
-        console.error("[trustdoc:wallet] chainChanged handler failed", error);
-      }
-    };
-
-    const onAccountsChanged = async (accounts) => {
-      try {
-        const account = accounts?.[0] || "";
-
-        if (!account) {
-          setDisconnectedState();
-          return;
-        }
-
-        let chainId = walletRef.current.chainId;
+    const unsubscribe = subscribeWalletEvents({
+      onChainChanged: async ({ chainId, isSupported }) => {
         try {
-          chainId = await getWalletChainId();
-        } catch {
-          // Use latest known chain id if wallet RPC chain check fails.
+          const activeAccount = walletRef.current.account;
+
+          setWallet((previous) => {
+            return {
+              ...previous,
+              chainId,
+              status: previous.account
+                ? (isSupported ? "connected" : "wrong-network")
+                : "disconnected",
+              isSupportedNetwork: isSupported,
+            };
+          });
+
+          if (!isSupported) {
+            setShowWrongNetworkModal(true);
+            return;
+          }
+
+          setShowWrongNetworkModal(false);
+
+          if (!activeAccount) {
+            return;
+          }
+
+          pushActivityRef.current?.({
+            type: "wallet",
+            title: "Network Changed",
+            description: "Wallet switched network.",
+          });
+
+          const runtime = listenerContextRef.current;
+          if (runtime.remoteEnabled && runtime.accessToken && runtime.userId) {
+            await updateWalletActivity(runtime.accessToken, runtime.userId, activeAccount).catch(() => null);
+          }
+
+          await refreshDocumentsRef.current?.({ silent: true });
+          await loadRemoteWorkspaceStateRef.current?.();
+        } catch (error) {
+          console.error("[trustdoc:wallet] chainChanged handler failed", error);
         }
+      },
+      onAccountsChanged: async ({ account }) => {
+        try {
+          if (!account) {
+            setDisconnectedState();
+            return;
+          }
 
-        const supported = isAmoyChain(chainId);
-        setWallet((previous) => ({
-          ...previous,
-          account,
-          chainId,
-          status: supported ? "connected" : "wrong-network",
-          isSupportedNetwork: supported,
-        }));
+          let chainId = walletRef.current.chainId;
+          try {
+            chainId = await getCurrentChainId();
+          } catch {
+            // Use latest known chain id if wallet RPC chain check fails.
+          }
 
-        setSessionStorage(sessionPayload(account, chainId));
-        setShowWrongNetworkModal(!supported);
-        seenDocumentEventsRef.current = new Set();
-        lastUpsertFingerprintRef.current = "";
-        lastLocalDocumentUpsertAtRef.current = 0;
+          const supported = isAmoyChain(chainId);
+          setWallet((previous) => ({
+            ...previous,
+            account,
+            chainId,
+            status: supported ? "connected" : "wrong-network",
+            isSupportedNetwork: supported,
+          }));
 
-        pushActivityRef.current?.({
-          type: "wallet",
-          title: "Wallet Account Switched",
-          description: shortAddress(account),
-        });
+          setSessionStorage(sessionPayload(account, chainId));
+          setShowWrongNetworkModal(!supported);
+          seenDocumentEventsRef.current = new Set();
+          lastUpsertFingerprintRef.current = "";
+          lastLocalDocumentUpsertAtRef.current = 0;
 
-        const runtime = listenerContextRef.current;
-        if (runtime.remoteEnabled && runtime.accessToken && runtime.userId) {
-          await updateWalletActivity(runtime.accessToken, runtime.userId, account).catch(() => null);
+          pushActivityRef.current?.({
+            type: "wallet",
+            title: "Wallet Account Switched",
+            description: shortAddress(account),
+          });
 
-          if (runtime.isAuthenticated && runtime.linkedWallet) {
-            if (account.toLowerCase() !== runtime.linkedWallet) {
-              await logSuspiciousActivity(runtime.accessToken, runtime.userId, {
-                activity_type: "wallet_changed_to_unlinked",
-                severity: "high",
-                description: "Wallet switched to an address not linked to this account.",
-                meta: {
-                  linkedWallet: runtime.linkedWallet,
-                  connectedWallet: account.toLowerCase(),
-                },
-              }).catch(() => null);
+          const runtime = listenerContextRef.current;
+          if (runtime.remoteEnabled && runtime.accessToken && runtime.userId) {
+            await updateWalletActivity(runtime.accessToken, runtime.userId, account).catch(() => null);
+
+            if (runtime.isAuthenticated && runtime.linkedWallet) {
+              if (account.toLowerCase() !== runtime.linkedWallet) {
+                await logSuspiciousActivity(runtime.accessToken, runtime.userId, {
+                  activity_type: "wallet_changed_to_unlinked",
+                  severity: "high",
+                  description: "Wallet switched to an address not linked to this account.",
+                  meta: {
+                    linkedWallet: runtime.linkedWallet,
+                    connectedWallet: account.toLowerCase(),
+                  },
+                }).catch(() => null);
+              }
             }
           }
+
+          await refreshWalletSessionsRef.current?.().catch(() => null);
+          await refreshDocumentsRef.current?.({ silent: true });
+          await loadRemoteWorkspaceStateRef.current?.();
+        } catch (error) {
+          console.error("[trustdoc:wallet] accountsChanged handler failed", error);
         }
-
-        await refreshWalletSessionsRef.current?.().catch(() => null);
-        await refreshDocumentsRef.current?.({ silent: true });
-        await loadRemoteWorkspaceStateRef.current?.();
-      } catch (error) {
-        console.error("[trustdoc:wallet] accountsChanged handler failed", error);
-      }
-    };
-
-    ethereum.on("chainChanged", onChainChanged);
-    ethereum.on("accountsChanged", onAccountsChanged);
+      },
+    });
 
     return () => {
-      ethereum.removeListener?.("chainChanged", onChainChanged);
-      ethereum.removeListener?.("accountsChanged", onAccountsChanged);
+      unsubscribe?.();
     };
   }, [setDisconnectedState]);
 
@@ -1605,7 +1602,7 @@ export function AppProvider({ children }) {
       addVerificationRecord,
       pushActivity,
       ensureSupportedNetwork: () => ensureAmoyNetwork({ autoSwitch: true }),
-      syncChainId: getWalletChainId,
+      syncChainId: getCurrentChainId,
     }),
     [
       settings,

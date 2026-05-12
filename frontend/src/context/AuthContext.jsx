@@ -30,7 +30,7 @@ import {
   updateCurrentUser,
   upsertProfile,
 } from "../services/supabaseService";
-import { getConnectedWallet, getWalletSigner } from "../utils/contract";
+import { getCurrentAddress, getSigner } from "../services/walletManager";
 
 const AuthContext = createContext(null);
 const WALLET_EMAIL_DOMAIN = "wallet.trustdoc.app";
@@ -91,8 +91,12 @@ async function deriveWalletCredential(signature, walletAddress) {
 }
 
 async function requestWalletSignature() {
-  await getConnectedWallet({ requestIfMissing: true });
-  const signer = await getWalletSigner();
+  const walletAddress = await getCurrentAddress({ requestIfMissing: true });
+  if (!walletAddress) {
+    throw new Error("No wallet account available.");
+  }
+
+  const signer = await getSigner({ requestIfMissing: false });
   const address = (await signer.getAddress()).toLowerCase();
   const nonce =
     typeof crypto?.randomUUID === "function"

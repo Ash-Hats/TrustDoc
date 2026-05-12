@@ -8,12 +8,25 @@ export function verifySignature(hash, signature, expectedSigner) {
     }
 
     const normalizedHash = rawHash(hash);
-    const recoveredAddress = ethers.verifyMessage(
+    const candidates = [
       ethers.getBytes(`0x${normalizedHash}`),
-      signature
-    );
+      `0x${normalizedHash}`,
+      normalizedHash,
+    ];
 
-    return recoveredAddress.toLowerCase() === expectedSigner.toLowerCase();
+    const recoveredAddresses = candidates
+      .map((candidate) => {
+        try {
+          return ethers.verifyMessage(candidate, signature);
+        } catch {
+          return "";
+        }
+      })
+      .filter(Boolean);
+
+    return recoveredAddresses.some(
+      (address) => address.toLowerCase() === expectedSigner.toLowerCase()
+    );
   } catch {
     return false;
   }
