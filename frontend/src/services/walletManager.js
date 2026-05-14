@@ -101,8 +101,12 @@ export function subscribeWalletEvents(listener = {}) {
   };
 }
 
-export async function connectWallet({ requestIfMissing = true, autoSwitch = false } = {}) {
-  const account = await getConnectedWallet({ requestIfMissing });
+export async function connectWallet({
+  requestIfMissing = true,
+  autoSwitch = false,
+  forcePrompt = false,
+} = {}) {
+  const account = await getConnectedWallet({ requestIfMissing, forcePrompt });
   if (!account) {
     return {
       account: "",
@@ -130,20 +134,24 @@ export function getProvider() {
   return getBrowserProvider();
 }
 
-export async function getSigner({ requestIfMissing = false } = {}) {
-  return getWalletSigner({ requestIfMissing });
+export async function getSigner({ requestIfMissing = false, forcePrompt = false } = {}) {
+  return getWalletSigner({ requestIfMissing, forcePrompt });
 }
 
-export async function getCurrentAddress({ requestIfMissing = false } = {}) {
-  return getConnectedWallet({ requestIfMissing });
+export async function getCurrentAddress({ requestIfMissing = false, forcePrompt = false } = {}) {
+  return getConnectedWallet({ requestIfMissing, forcePrompt });
 }
 
 export async function getCurrentChainId() {
   return getWalletChainId();
 }
 
-export async function getWalletSnapshot({ requestIfMissing = false, autoSwitch = false } = {}) {
-  const account = await getConnectedWallet({ requestIfMissing });
+export async function getWalletSnapshot({
+  requestIfMissing = false,
+  autoSwitch = false,
+  forcePrompt = false,
+} = {}) {
+  const account = await getConnectedWallet({ requestIfMissing, forcePrompt });
   const chainId = await getWalletChainId().catch(() => "");
 
   if (!account) {

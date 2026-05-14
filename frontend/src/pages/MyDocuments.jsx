@@ -36,6 +36,7 @@ import EmptyState from "../components/ui/EmptyState";
 import StatusBadge from "../components/ui/StatusBadge";
 import Skeleton from "../components/ui/Skeleton";
 import DocumentDetailsModal from "../modals/DocumentDetailsModal";
+import { buildPublicDocumentPath, buildPublicDocumentUrl } from "../utils/publicLinks";
 
 const PAGE_SIZE = 8;
 
@@ -220,10 +221,7 @@ export default function MyDocuments() {
       type: "trustdoc-verification-proof",
       exportedAt: new Date().toISOString(),
       document,
-      verifyLink:
-        typeof window !== "undefined"
-          ? `${window.location.origin}/verify?hash=${document.hash}`
-          : "",
+      verifyLink: buildPublicDocumentUrl(document.hash),
     };
 
     downloadJsonFile(proof, `trustdoc-${document.hash.slice(2, 12)}-proof.json`);
@@ -435,7 +433,7 @@ export default function MyDocuments() {
                         <Button variant="secondary" className="px-3 py-2 text-xs" onClick={() => handleOpenAccessEditor(doc)}>
                           Access
                         </Button>
-                        <Link to={`/verify?hash=${doc.hash}`}>
+                        <Link to={buildPublicDocumentPath(doc.hash)}>
                           <Button variant="secondary" className="px-3 py-2 text-xs">
                             <ShieldCheck size={13} />
                             Verify
@@ -503,7 +501,7 @@ export default function MyDocuments() {
                         <Button variant="secondary" className="px-3 py-2 text-xs" onClick={() => handleExportProof(doc)}>
                           Export Proof
                         </Button>
-                        <Link to={`/verify?hash=${doc.hash}`}>
+                        <Link to={buildPublicDocumentPath(doc.hash)}>
                           <Button variant="secondary" className="px-3 py-2 text-xs">
                             Verify
                           </Button>
@@ -605,16 +603,14 @@ export default function MyDocuments() {
             <h3 className="text-lg font-semibold text-gray-100">Document Verify QR</h3>
             <p className="mt-1 text-xs text-gray-400">Share this QR for instant verification.</p>
             <div className="mt-4 inline-flex rounded-xl border border-white/10 bg-white p-3">
-              <QRCode value={`${window.location.origin}/verify?hash=${qrDocument.hash}`} size={180} />
+              <QRCode value={buildPublicDocumentUrl(qrDocument.hash)} size={180} />
             </div>
             <div className="mt-4 flex justify-center gap-2">
               <Button variant="secondary" onClick={() => setQrDocument(null)}>
                 Close
               </Button>
               <Button
-                onClick={() =>
-                  handleCopy(`${window.location.origin}/verify?hash=${qrDocument.hash}`, "Verify link")
-                }
+                onClick={() => handleCopy(buildPublicDocumentUrl(qrDocument.hash), "Verify link")}
               >
                 Copy Link
               </Button>

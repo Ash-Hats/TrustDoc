@@ -645,32 +645,7 @@ export function AppProvider({ children }) {
           return [];
         }
 
-        const linkedWallet = profile?.wallet_address?.toLowerCase() || "";
-        if (
-          isAuthenticated &&
-          linkedWallet &&
-          wallet.account.toLowerCase() !== linkedWallet
-        ) {
-          if (documentsRef.current.length) {
-            setDocuments([]);
-            documentsRef.current = [];
-          }
-          if (remoteEnabled) {
-            void logSuspiciousActivity(session?.accessToken, userId, {
-              activity_type: "wallet_mismatch",
-              severity: "high",
-              description: "Connected wallet does not match linked profile wallet.",
-              meta: {
-                connectedWallet: wallet.account.toLowerCase(),
-                linkedWallet,
-              },
-            }).catch(() => null);
-          }
-          if (!silent && settings.notifications) {
-            toast.error("Connected wallet is not linked to the current account.");
-          }
-          return [];
-        }
+        const activeWallet = wallet.account.toLowerCase();
 
         if (!silent) {
           setIsDocumentsLoading(true);
@@ -682,8 +657,11 @@ export function AppProvider({ children }) {
 
           if (remoteEnabled) {
             const remoteRows = await getUserDocumentRecords(session?.accessToken, userId).catch(() => []);
+            const scopedRemoteRows = remoteRows.filter(
+              (row) => String(row?.wallet_address || "").toLowerCase() === activeWallet
+            );
             const remoteByHash = new Map(
-              remoteRows
+              scopedRemoteRows
                 .map(mapRemoteDocument)
                 .map((item) => [item.hash?.toLowerCase(), item])
             );
@@ -740,7 +718,9 @@ export function AppProvider({ children }) {
           if (remoteEnabled) {
             try {
               const fallbackRows = await getUserDocumentRecords(session?.accessToken, userId);
-              const fallbackDocuments = fallbackRows.map(mapRemoteDocument);
+              const fallbackDocuments = fallbackRows
+                .map(mapRemoteDocument)
+                .filter((item) => String(item?.owner || "").toLowerCase() === activeWallet);
               const fallbackFingerprint = buildDocumentsFingerprint(fallbackDocuments);
 
               if (buildDocumentsFingerprint(documentsRef.current) !== fallbackFingerprint) {
@@ -785,8 +765,6 @@ export function AppProvider({ children }) {
       return refreshInFlightRef.current;
     },
     [
-      isAuthenticated,
-      profile?.wallet_address,
       pushActivity,
       remoteEnabled,
       session,
@@ -798,17 +776,23 @@ export function AppProvider({ children }) {
   );
 
   const connectWallet = useCallback(
-    async ({ requestIfMissing = true, silent = false } = {}) => {
+    async ({
+      requestIfMissing = true,
+      silent = false,
+      autoSwitch = false,
+      forcePrompt = false,
+    } = {}) => {
       if (connectInFlightRef.current) {
         return connectInFlightRef.current;
       }
 
       const connectPromise = (async () => {
         setWallet((previous) => ({ ...previous, isConnecting: true }));
-        const allowAutoSwitch = false;
+        const allowAutoSwitch = Boolean(autoSwitch);
         console.debug("[trustdoc:wallet] connectWallet start", {
           requestIfMissing,
           autoSwitch: allowAutoSwitch,
+          forcePrompt,
           silent,
         });
 
@@ -816,6 +800,7 @@ export function AppProvider({ children }) {
           const walletSnapshot = await connectWalletWithManager({
             requestIfMissing,
             autoSwitch: allowAutoSwitch,
+            forcePrompt,
           });
           const account = walletSnapshot.account;
 
@@ -891,6 +876,10 @@ export function AppProvider({ children }) {
         } catch (error) {
           const message = error?.message || "Wallet connection failed.";
           console.error("[trustdoc:wallet] connectWallet error", error);
+
+          if (/metamask is not installed/i.test(message) && typeof window !== "undefined") {
+            window.open("https://metamask.io/download/", "_blank", "noopener,noreferrer");
+          }
 
           setDisconnectedState();
 

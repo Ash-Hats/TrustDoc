@@ -288,6 +288,12 @@ export async function requestWalletRpc(method, params = []) {
   return requestPromise;
 }
 
+function isPermissionMethodUnavailable(error) {
+  const code = Number(error?.code);
+  const message = String(error?.message || error?.shortMessage || "").toLowerCase();
+  return code === -32601 || /method not found|not supported|unsupported/i.test(message);
+}
+
 export function getBrowserProvider() {
   const browserWindow = getBrowserWindow();
   const ethereum = getInjectedEthereum();
@@ -301,8 +307,8 @@ export function getBrowserProvider() {
   return browserProviderSingleton;
 }
 
-export async function getWalletSigner({ requestIfMissing = true } = {}) {
-  const account = await getConnectedWallet({ requestIfMissing });
+export async function getWalletSigner({ requestIfMissing = true, forcePrompt = false } = {}) {
+  const account = await getConnectedWallet({ requestIfMissing, forcePrompt });
   if (!account) {
     throw new Error("No wallet account available.");
   }
@@ -322,8 +328,8 @@ export async function getWalletSigner({ requestIfMissing = true } = {}) {
   }
 }
 
-export async function getCurrentAddress({ requestIfMissing = false } = {}) {
-  return getConnectedWallet({ requestIfMissing });
+export async function getCurrentAddress({ requestIfMissing = false, forcePrompt = false } = {}) {
+  return getConnectedWallet({ requestIfMissing, forcePrompt });
 }
 
 export function disconnectWalletProviderSession() {
@@ -520,15 +526,27 @@ export async function ensureAmoyNetwork({ autoSwitch = true } = {}) {
   };
 }
 
-export async function getConnectedWallet({ requestIfMissing = false } = {}) {
+export async function getConnectedWallet({ requestIfMissing = false, forcePrompt = false } = {}) {
   const browserWindow = getBrowserWindow();
   if (!browserWindow?.ethereum?.request) {
+    if (requestIfMissing || forcePrompt) {
+      throw new Error("MetaMask is not installed. Please install MetaMask and try again.");
+    }
     return "";
   }
 
   let accounts = await requestWalletRpc("eth_accounts", []);
 
-  if (!accounts.length && requestIfMissing) {
+  if (requestIfMissing && forcePrompt) {
+    try {
+      await requestWalletRpc("wallet_requestPermissions", [{ eth_accounts: {} }]);
+    } catch (permissionError) {
+      if (!isPermissionMethodUnavailable(permissionError)) {
+        throw permissionError;
+      }
+    }
+    accounts = await requestWalletRpc("eth_requestAccounts", []);
+  } else if (!accounts.length && requestIfMissing) {
     accounts = await requestWalletRpc("eth_requestAccounts", []);
   }
 

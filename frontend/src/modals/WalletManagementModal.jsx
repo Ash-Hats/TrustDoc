@@ -54,7 +54,9 @@ function WalletManagementModal({ isOpen, onClose }) {
   const handleConnectWallet = async () => {
     setConnecting(true);
     try {
-      const walletAddress = (await getCurrentAddress({ requestIfMissing: true })).toLowerCase();
+      const walletAddress = (
+        await getCurrentAddress({ requestIfMissing: true, forcePrompt: true })
+      ).toLowerCase();
       if (!walletAddress) {
         throw new Error("No account selected");
       }
@@ -104,6 +106,9 @@ function WalletManagementModal({ isOpen, onClose }) {
       }
     } catch (error) {
       console.error("Wallet connection error:", error);
+      if (/metamask is not installed/i.test(error?.message || "") && typeof window !== "undefined") {
+        window.open("https://metamask.io/download/", "_blank", "noopener,noreferrer");
+      }
       if (error.code === -32602 || error.message?.includes("user rejected")) {
         toast.error("Connection cancelled by user");
       } else {

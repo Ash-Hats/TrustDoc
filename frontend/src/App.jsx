@@ -11,6 +11,7 @@ import Skeleton from "./components/ui/Skeleton";
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const RegisterDocument = lazy(() => import("./pages/Register"));
 const Verify = lazy(() => import("./pages/Verify"));
+const DocumentInfo = lazy(() => import("./pages/DocumentInfo"));
 const MyDocuments = lazy(() => import("./pages/MyDocuments"));
 const Analytics = lazy(() => import("./pages/Analytics"));
 const Settings = lazy(() => import("./pages/Settings"));
@@ -72,6 +73,14 @@ function App() {
             element={
               <PublicLayout>
                 <Verify />
+              </PublicLayout>
+            }
+          />
+          <Route
+            path="/document/:hash"
+            element={
+              <PublicLayout>
+                <DocumentInfo />
               </PublicLayout>
             }
           />

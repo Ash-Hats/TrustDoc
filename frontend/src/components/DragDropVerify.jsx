@@ -48,7 +48,7 @@ function getToastForStatus(status) {
   };
 }
 
-export default function DragDropVerify({ verifySignature, initialHash = "" }) {
+export default function DragDropVerify({ verifySignature, initialHash = "", readOnly = false }) {
   const { addVerificationRecord, settings } = useAppContext();
   const [fileName, setFileName] = useState("");
   const [hash, setHash] = useState("");
@@ -236,8 +236,8 @@ export default function DragDropVerify({ verifySignature, initialHash = "" }) {
     }
 
     qrVerificationGuardRef.current = qrKey;
-    void runVerification(normalizedInitialHash, "From QR Link", { source: "qr" });
-  }, [initialHash, initialHashInvalid, normalizedInitialHash, runVerification]);
+    void runVerification(normalizedInitialHash, readOnly ? "" : "From QR Link", { source: "qr" });
+  }, [initialHash, initialHashInvalid, normalizedInitialHash, readOnly, runVerification]);
 
   useEffect(() => {
     return () => {
@@ -248,42 +248,45 @@ export default function DragDropVerify({ verifySignature, initialHash = "" }) {
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     maxFiles: 1,
+    disabled: readOnly,
   });
 
   const showResult = useMemo(() => Boolean(result), [result]);
 
   return (
     <section className="w-full space-y-5">
-      <Card className="p-5 sm:p-6">
-        <div
-          {...getRootProps()}
-          className={[
-            "group cursor-pointer rounded-2xl border-2 border-dashed p-10 text-center transition-all duration-300",
-            "border-violet-300/40 bg-white/[0.04] hover:border-violet-300/70 hover:shadow-glow-violet",
-            isDragActive ? "border-cyan-300/80 bg-cyan-500/10 shadow-glow-cyan" : "",
-          ].join(" ")}
-        >
-          <input {...getInputProps()} />
-          <div className="mx-auto mb-4 inline-flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-r from-violet-500/25 to-indigo-500/25 text-violet-200 shadow-glow-violet transition group-hover:scale-105">
-            {isDragActive ? <Fingerprint size={30} /> : <UploadCloud size={30} />}
+      {!readOnly ? (
+        <Card className="p-5 sm:p-6">
+          <div
+            {...getRootProps()}
+            className={[
+              "group cursor-pointer rounded-2xl border-2 border-dashed p-10 text-center transition-all duration-300",
+              "border-violet-300/40 bg-white/[0.04] hover:border-violet-300/70 hover:shadow-glow-violet",
+              isDragActive ? "border-cyan-300/80 bg-cyan-500/10 shadow-glow-cyan" : "",
+            ].join(" ")}
+          >
+            <input {...getInputProps()} />
+            <div className="mx-auto mb-4 inline-flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-r from-violet-500/25 to-indigo-500/25 text-violet-200 shadow-glow-violet transition group-hover:scale-105">
+              {isDragActive ? <Fingerprint size={30} /> : <UploadCloud size={30} />}
+            </div>
+            <p className="text-xl font-semibold tracking-tight text-gray-100">
+              {isDragActive ? "Drop file to verify now" : "Drag and drop document to verify"}
+            </p>
+            <p className="mt-2 text-sm text-gray-400">or click to browse local files</p>
           </div>
-          <p className="text-xl font-semibold tracking-tight text-gray-100">
-            {isDragActive ? "Drop file to verify now" : "Drag and drop document to verify"}
-          </p>
-          <p className="mt-2 text-sm text-gray-400">or click to browse local files</p>
-        </div>
 
-        {fileName || hash ? (
-          <div className="mt-4 rounded-xl border border-cyan-300/25 bg-cyan-500/10 px-4 py-3">
-            {fileName ? (
-              <p className="text-sm text-cyan-100">
-                <span className="font-semibold">File:</span> {fileName}
-              </p>
-            ) : null}
-            {hash ? <p className="mt-2 break-all font-mono text-xs text-cyan-200/90">{hash}</p> : null}
-          </div>
-        ) : null}
-      </Card>
+          {fileName || hash ? (
+            <div className="mt-4 rounded-xl border border-cyan-300/25 bg-cyan-500/10 px-4 py-3">
+              {fileName ? (
+                <p className="text-sm text-cyan-100">
+                  <span className="font-semibold">File:</span> {fileName}
+                </p>
+              ) : null}
+              {hash ? <p className="mt-2 break-all font-mono text-xs text-cyan-200/90">{hash}</p> : null}
+            </div>
+          ) : null}
+        </Card>
+      ) : null}
 
       {isLoading ? (
         <div className="flex items-center gap-3 rounded-xl border border-violet-300/25 bg-violet-500/10 px-4 py-3 text-sm text-violet-200">

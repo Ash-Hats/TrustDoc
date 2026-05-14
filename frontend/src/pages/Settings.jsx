@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertTriangle,
   Bell,
@@ -97,9 +97,12 @@ export default function Settings() {
   const [isSwitchingNetwork, setIsSwitchingNetwork] = useState(false);
   const [isSyncingWallet, setIsSyncingWallet] = useState(false);
   const [networkHint, setNetworkHint] = useState("");
-  const [displayName, setDisplayName] = useState(profile?.display_name || "");
+  const [displayName, setDisplayName] = useState("");
   const [isSavingProfile, setIsSavingProfile] = useState(false);
-  const resolvedDisplayName = displayName || profile?.display_name || "";
+
+  useEffect(() => {
+    setDisplayName(profile?.display_name || "");
+  }, [profile?.display_name]);
 
   const sessionExpiryLabel = session?.expiresAt
     ? new Date(session.expiresAt).toLocaleString()
@@ -175,9 +178,11 @@ export default function Settings() {
 
     setIsSyncingWallet(true);
     try {
-      const account =
-        wallet.account ||
-        (await connectWallet({ requestIfMissing: true, autoSwitch: false }));
+      const account = await connectWallet({
+        requestIfMissing: true,
+        autoSwitch: false,
+        forcePrompt: true,
+      });
 
       if (!account) {
         throw new Error("No wallet connected.");
@@ -198,10 +203,16 @@ export default function Settings() {
       return;
     }
 
+    const safeName = sanitizeText(displayName, { maxLength: 80 });
+    if (!safeName) {
+      toast.error("Display name is required.");
+      return;
+    }
+
     setIsSavingProfile(true);
     try {
       await updateAuthProfile({
-        displayName: sanitizeText(resolvedDisplayName, { maxLength: 80 }),
+        displayName: safeName,
       });
       toast.success("Profile updated.");
     } catch (error) {
@@ -230,7 +241,7 @@ export default function Settings() {
             <label className="text-xs uppercase tracking-wide text-gray-400">Display Name</label>
             <input
               type="text"
-              value={resolvedDisplayName}
+              value={displayName}
               onChange={(event) => setDisplayName(event.target.value)}
               className="w-full rounded-xl border border-white/15 bg-white/[0.04] px-3 py-2.5 text-sm text-gray-100 outline-none transition focus:border-violet-300/70 focus:ring-2 focus:ring-violet-400/20"
               placeholder="Your display name"
@@ -284,7 +295,9 @@ export default function Settings() {
           <div className="grid gap-2 sm:grid-cols-2">
             <Button
               variant="secondary"
-              onClick={() => connectWallet({ requestIfMissing: true, autoSwitch: false })}
+              onClick={() =>
+                connectWallet({ requestIfMissing: true, autoSwitch: false, forcePrompt: true })
+              }
               disabled={wallet.isConnecting}
             >
               <Wallet size={14} />

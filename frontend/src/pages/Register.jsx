@@ -13,6 +13,7 @@ import { uploadMetadataToPinata } from "../utils/pinata";
 import { registerDocumentOnChain, verifyDocumentOnChain } from "../utils/contract";
 import { signHash } from "../utils/sign";
 import { buildTxUrl } from "../utils/explorer";
+import { buildPublicDocumentUrl } from "../utils/publicLinks";
 
 const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024;
 const DEFAULT_DOC_TYPE = "General";
@@ -54,11 +55,11 @@ export default function Register() {
 
   const statusMessage = useMemo(() => stepText(step), [step]);
   const verifyUrl = useMemo(() => {
-    if (!hashPreview || typeof window === "undefined") {
+    if (!hashPreview) {
       return "";
     }
 
-    return `${window.location.origin}/verify?hash=0x${hashPreview}`;
+    return buildPublicDocumentUrl(`0x${hashPreview}`);
   }, [hashPreview]);
 
   function resetFormState() {

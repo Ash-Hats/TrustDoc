@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import { Check, Link2, Save, ShieldCheck, UserRound, Wallet } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
@@ -17,7 +17,7 @@ export default function Profile() {
     unlinkWallet,
   } = useAuth();
   const { wallet, connectWallet } = useAppContext();
-  const [displayName, setDisplayName] = useState(() => profile?.display_name || "");
+  const [displayName, setDisplayName] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isWalletSyncing, setIsWalletSyncing] = useState(false);
 
@@ -25,14 +25,21 @@ export default function Profile() {
     () => profile?.wallet_address || wallet.account || "",
     [profile?.wallet_address, wallet.account]
   );
-  const resolvedDisplayName = displayName || profile?.display_name || "";
+
+  useEffect(() => {
+    setDisplayName(profile?.display_name || "");
+  }, [profile?.display_name]);
 
   async function handleSaveProfile() {
     if (isSaving) {
       return;
     }
 
-    const safeName = sanitizeText(resolvedDisplayName, { maxLength: 80 });
+    const safeName = sanitizeText(displayName, { maxLength: 80 });
+    if (!safeName) {
+      toast.error("Display name is required.");
+      return;
+    }
     setIsSaving(true);
     try {
       await updateAuthProfile({ displayName: safeName });
@@ -51,12 +58,11 @@ export default function Profile() {
 
     setIsWalletSyncing(true);
     try {
-      const account =
-        wallet.account ||
-        (await connectWallet({
-          requestIfMissing: true,
-          autoSwitch: true,
-        }));
+      const account = await connectWallet({
+        requestIfMissing: true,
+        autoSwitch: true,
+        forcePrompt: true,
+      });
 
       if (!account) {
         throw new Error("No wallet connected.");
@@ -107,7 +113,7 @@ export default function Profile() {
             <div className="flex items-center gap-2 rounded-xl border border-white/15 bg-white/[0.04] px-3 py-2.5">
               <UserRound size={15} className="text-gray-400" />
               <input
-                value={resolvedDisplayName}
+                value={displayName}
                 onChange={(event) => setDisplayName(event.target.value)}
                 className="w-full bg-transparent text-sm text-gray-100 outline-none placeholder:text-gray-500"
                 placeholder="Your display name"
@@ -166,7 +172,9 @@ export default function Profile() {
 
           <Button
             variant="secondary"
-            onClick={() => connectWallet({ requestIfMissing: true, autoSwitch: false })}
+            onClick={() =>
+              connectWallet({ requestIfMissing: true, autoSwitch: false, forcePrompt: true })
+            }
           >
             <Wallet size={14} />
             Connect / Switch Wallet
