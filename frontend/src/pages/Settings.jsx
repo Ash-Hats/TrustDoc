@@ -7,7 +7,6 @@ import {
   KeyRound,
   Link2,
   LogOut,
-  PlugZap,
   ShieldCheck,
   Trash2,
   Wallet,
@@ -178,7 +177,7 @@ export default function Settings() {
     try {
       const account =
         wallet.account ||
-        (await connectWallet({ requestIfMissing: true, autoSwitch: true }));
+        (await connectWallet({ requestIfMissing: true, autoSwitch: false }));
 
       if (!account) {
         throw new Error("No wallet connected.");
@@ -285,11 +284,15 @@ export default function Settings() {
           <div className="grid gap-2 sm:grid-cols-2">
             <Button
               variant="secondary"
-              onClick={() => connectWallet({ requestIfMissing: true, autoSwitch: true })}
+              onClick={() => connectWallet({ requestIfMissing: true, autoSwitch: false })}
               disabled={wallet.isConnecting}
             >
               <Wallet size={14} />
-              {wallet.isConnecting ? "Connecting..." : wallet.account ? "Change Wallet" : "Connect Wallet"}
+              {wallet.isConnecting
+                ? "Connecting..."
+                : wallet.account
+                  ? "Switch Account"
+                  : "Connect Wallet"}
             </Button>
             <Button variant="secondary" onClick={handleCopyWallet} disabled={!wallet.account}>
               <Copy size={14} />
@@ -343,17 +346,6 @@ export default function Settings() {
               <Toggle
                 checked={settings.notifications}
                 onChange={(value) => updateSettings({ notifications: value })}
-              />
-            }
-          />
-          <SettingRow
-            icon={PlugZap}
-            title="Auto Connect"
-            description="Reconnect wallet when opening app."
-            control={
-              <Toggle
-                checked={settings.autoConnect}
-                onChange={(value) => updateSettings({ autoConnect: value })}
               />
             }
           />

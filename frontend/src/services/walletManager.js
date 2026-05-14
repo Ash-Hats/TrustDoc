@@ -101,7 +101,7 @@ export function subscribeWalletEvents(listener = {}) {
   };
 }
 
-export async function connectWallet({ requestIfMissing = true, autoSwitch = true } = {}) {
+export async function connectWallet({ requestIfMissing = true, autoSwitch = false } = {}) {
   const account = await getConnectedWallet({ requestIfMissing });
   if (!account) {
     return {
@@ -189,4 +189,3 @@ export function getWalletNetworkName(chainId) {
 
   return "Unsupported network";
 }
-

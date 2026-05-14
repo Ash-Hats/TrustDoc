@@ -15,7 +15,7 @@ const STATUS_CONFIG = {
   tampered: {
     icon: ShieldAlert,
     title: "TAMPERED",
-    description: "Hash, issuer, or signature mismatch was detected.",
+    description: "Hash mismatch was detected during verification.",
     cardClass: "border-rose-300/30 bg-rose-500/10 shadow-glow-rose animate-shake-soft",
     iconClass: "bg-rose-400/20 text-rose-200",
   },
@@ -96,7 +96,13 @@ export default function ResultCard({
       <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.04] p-3">
         <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Hash Comparison</p>
         <p className="mt-1 text-sm text-gray-200">
-          {details.hashMatches ? "Input hash matches metadata hash." : "Input hash differs from metadata hash."}
+          {details.expectedHashMismatch
+            ? "Uploaded file hash does not match the QR/link hash."
+            : details.metadataHashMismatch
+              ? "On-chain hash exists, but IPFS metadata hash differs from the verified hash."
+              : details.hashMatches
+                ? "Input hash matches verification proof."
+                : "Input hash mismatch detected."}
         </p>
       </div>
 

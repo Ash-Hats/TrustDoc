@@ -254,7 +254,7 @@ export default function IdentitySetup() {
     setIsLinkingWallet(true);
     try {
       const account =
-        wallet.account || (await connectWallet({ requestIfMissing: true, autoSwitch: true }));
+        wallet.account || (await connectWallet({ requestIfMissing: true, autoSwitch: false }));
 
       if (!account) {
         throw new Error("No wallet connected.");

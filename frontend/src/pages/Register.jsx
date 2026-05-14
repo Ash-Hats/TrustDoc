@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { ExternalLink, FileUp, Loader2, ShieldCheck } from "lucide-react";
 import toast from "react-hot-toast";
+import { QRCodeSVG as QRCode } from "qrcode.react";
 import Card from "../components/ui/Card";
 import Button from "../components/ui/Button";
 import { useAppContext } from "../context/AppContext";
@@ -52,6 +53,13 @@ export default function Register() {
   const [cid, setCid] = useState("");
 
   const statusMessage = useMemo(() => stepText(step), [step]);
+  const verifyUrl = useMemo(() => {
+    if (!hashPreview || typeof window === "undefined") {
+      return "";
+    }
+
+    return `${window.location.origin}/verify?hash=0x${hashPreview}`;
+  }, [hashPreview]);
 
   function resetFormState() {
     setStep("");
@@ -281,6 +289,16 @@ export default function Register() {
                   </a>
                 </div>
               ) : null}
+            </div>
+          ) : null}
+
+          {verifyUrl && !isSubmitting ? (
+            <div className="rounded-xl border border-cyan-300/25 bg-cyan-500/10 p-3">
+              <p className="text-xs uppercase tracking-[0.12em] text-cyan-200">Public Verify Link</p>
+              <p className="mt-2 break-all font-mono text-xs text-cyan-100">{verifyUrl}</p>
+              <div className="mt-3 inline-flex rounded-xl border border-white/15 bg-white p-2">
+                <QRCode value={verifyUrl} size={110} />
+              </div>
             </div>
           ) : null}
 

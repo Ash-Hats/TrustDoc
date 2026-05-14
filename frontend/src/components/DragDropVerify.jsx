@@ -1,22 +1,51 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Fingerprint, Loader2, ScanSearch, UploadCloud } from "lucide-react";
 import { useDropzone } from "react-dropzone";
 import toast from "react-hot-toast";
 import { hashFile } from "../utils/hashFile";
 import { verifyDocumentOnChain } from "../utils/contract";
-import { fetchMetadata } from "../services/documentService";
-import { buildVerificationConfidence } from "../services/documentService";
+import { buildVerificationConfidence, fetchMetadata } from "../services/documentService";
 import { normalizeHash, normalizeHashOrEmpty, rawHash } from "../utils/hashUtils";
 import ResultCard from "./ResultCard";
 import { useAppContext } from "../context/AppContext";
 import ProofDetailsModal from "../modals/ProofDetailsModal";
 import Card from "./ui/Card";
 
+const TOAST_NAMESPACE = "trustdoc-verify";
+
 function normalizeIssuerValue(value) {
   return String(value || "")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+function getToastForStatus(status) {
+  if (status === "verified") {
+    return {
+      fn: toast.success,
+      message: "Document verified successfully.",
+    };
+  }
+
+  if (status === "revoked") {
+    return {
+      fn: toast.error,
+      message: "Document exists but is revoked.",
+    };
+  }
+
+  if (status === "tampered") {
+    return {
+      fn: toast.error,
+      message: "Tamper risk detected.",
+    };
+  }
+
+  return {
+    fn: toast.error,
+    message: "Document hash not found on-chain.",
+  };
 }
 
 export default function DragDropVerify({ verifySignature, initialHash = "" }) {
@@ -29,16 +58,21 @@ export default function DragDropVerify({ verifySignature, initialHash = "" }) {
   const [metadata, setMetadata] = useState(null);
   const [showProofModal, setShowProofModal] = useState(false);
   const [verdict, setVerdict] = useState("not-found");
+  const qrVerificationGuardRef = useRef("");
+  const activeRunIdRef = useRef(0);
+  const lastVerificationRecordRef = useRef("");
 
   const normalizedInitialHash = initialHash.startsWith("0x") ? initialHash.slice(2) : initialHash;
   const initialHashInvalid = Boolean(initialHash) && !/^[0-9a-fA-F]{64}$/.test(normalizedInitialHash);
 
   const runVerification = useCallback(
-    async (rawHashInput, sourceFileName = "") => {
+    async (rawHashInput, sourceFileName = "", { expectedHashHex = "", source = "verify" } = {}) => {
+      const runId = Date.now();
+      activeRunIdRef.current = runId;
+
       setIsLoading(true);
       setError("");
       setResult(null);
-      setHash(rawHashInput.startsWith("0x") ? rawHashInput.slice(2) : rawHashInput);
       setMetadata(null);
       setFileName(sourceFileName);
       setVerdict("not-found");
@@ -46,7 +80,12 @@ export default function DragDropVerify({ verifySignature, initialHash = "" }) {
       try {
         const normalizedInputHex = normalizeHash(rawHashInput);
         const normalizedInputRaw = rawHash(normalizedInputHex);
+        const normalizedExpectedHashHex = expectedHashHex ? normalizeHash(expectedHashHex) : "";
+        const expectedHashMismatch =
+          Boolean(normalizedExpectedHashHex) && normalizedExpectedHashHex !== normalizedInputHex;
+
         setHash(normalizedInputRaw);
+
         const chainResult = await verifyDocumentOnChain(normalizedInputHex);
         const fetchedMetadata = chainResult?.gatewayUrl
           ? await fetchMetadata(chainResult.gatewayUrl).catch(() => null)
@@ -55,21 +94,20 @@ export default function DragDropVerify({ verifySignature, initialHash = "" }) {
         const metadataHashProvided = Boolean(String(fetchedMetadata?.fileHash || "").trim());
         const normalizedMetadataHashHex = normalizeHashOrEmpty(fetchedMetadata?.fileHash);
         const normalizedMetadataHashRaw = normalizedMetadataHashHex ? rawHash(normalizedMetadataHashHex) : "";
-        const hashMatches = metadataHashProvided
+        const metadataHashMatches = metadataHashProvided
           ? normalizedMetadataHashRaw === normalizedInputRaw
           : true;
+        const metadataHashMismatch = metadataHashProvided && !metadataHashMatches;
 
         const signatureProvided = Boolean(
-          normalizedMetadataHashHex && fetchedMetadata?.signature && fetchedMetadata?.signer
+          normalizedMetadataHashHex &&
+            fetchedMetadata?.signature &&
+            fetchedMetadata?.signer &&
+            typeof verifySignature === "function"
         );
         const signatureValid = signatureProvided
-          ? verifySignature(
-              normalizedMetadataHashHex,
-              fetchedMetadata.signature,
-              fetchedMetadata.signer
-            )
+          ? verifySignature(normalizedMetadataHashHex, fetchedMetadata.signature, fetchedMetadata.signer)
           : null;
-        const signatureMismatch = signatureProvided && !signatureValid;
 
         const normalizedMetadataIssuer = normalizeIssuerValue(fetchedMetadata?.issuedBy || "");
         const normalizedOnChainIssuer = normalizeIssuerValue(chainResult?.issuedBy || "");
@@ -92,15 +130,12 @@ export default function DragDropVerify({ verifySignature, initialHash = "" }) {
           timestampValid,
         });
 
-        const issuerMismatch = issuerProvided && onChainIssuerProvided && !issuerMatches;
-        const tampered = chainResult.exists && (!hashMatches || signatureMismatch || issuerMismatch);
-
         let status = "not-found";
         if (!chainResult.exists) {
           status = "not-found";
         } else if (chainResult.revoked) {
           status = "revoked";
-        } else if (tampered) {
+        } else if (expectedHashMismatch || metadataHashMismatch) {
           status = "tampered";
         } else {
           status = "verified";
@@ -113,41 +148,53 @@ export default function DragDropVerify({ verifySignature, initialHash = "" }) {
           details: {
             signatureValid,
             signatureProvided,
-            hashMatches,
+            hashMatches: !expectedHashMismatch && metadataHashMatches,
+            metadataHashMatches,
+            metadataHashMismatch,
+            expectedHashMismatch,
             issuerMatches,
             timestampValid,
             confidenceScore,
           },
         };
 
+        if (activeRunIdRef.current !== runId) {
+          return;
+        }
+
         setMetadata(fetchedMetadata);
         setResult(payload);
         setVerdict(status);
 
-        addVerificationRecord({
-          source: "verify",
-          status,
-          hash: chainResult?.hash || normalizedInputHex,
-          issuer: chainResult?.issuedBy || fetchedMetadata?.issuedBy || "Unknown",
-          txHash: chainResult?.txHash || "",
-          confidenceScore,
-        });
-
-        if (status === "verified") {
-          toast.success("Document verified successfully.");
-        } else if (status === "revoked") {
-          toast.error("Document exists but is revoked.");
-        } else if (status === "tampered") {
-          toast.error("Tamper risk detected.");
-        } else {
-          toast.error("Document hash not found on-chain.");
+        const hashForRecord = chainResult?.hash || normalizedInputHex;
+        const recordKey = `${source}:${status}:${hashForRecord.toLowerCase()}`;
+        if (lastVerificationRecordRef.current !== recordKey) {
+          addVerificationRecord({
+            source,
+            status,
+            hash: hashForRecord,
+            issuer: chainResult?.issuedBy || fetchedMetadata?.issuedBy || "Unknown",
+            txHash: chainResult?.txHash || "",
+            confidenceScore,
+          });
+          lastVerificationRecordRef.current = recordKey;
         }
+
+        const statusToast = getToastForStatus(status);
+        const toastId = `${TOAST_NAMESPACE}:${status}:${hashForRecord.toLowerCase()}`;
+        statusToast.fn(statusToast.message, { id: toastId });
       } catch (verifyError) {
+        if (activeRunIdRef.current !== runId) {
+          return;
+        }
+
         const message = verifyError instanceof Error ? verifyError.message : "Verification failed.";
         setError(message);
-        toast.error(message);
+        toast.error(message, { id: `${TOAST_NAMESPACE}:error:${String(rawHashInput || "").toLowerCase()}` });
       } finally {
-        setIsLoading(false);
+        if (activeRunIdRef.current === runId) {
+          setIsLoading(false);
+        }
       }
     },
     [addVerificationRecord, verifySignature]
@@ -156,34 +203,47 @@ export default function DragDropVerify({ verifySignature, initialHash = "" }) {
   const onDrop = useCallback(
     async (acceptedFiles) => {
       const file = acceptedFiles[0];
-
       if (!file) {
         return;
       }
 
       try {
         const digest = await hashFile(file);
-        await runVerification(digest, file.name);
+        const expectedHashHex =
+          initialHash && !initialHashInvalid ? normalizeHash(normalizedInitialHash) : "";
+        await runVerification(digest, file.name, {
+          expectedHashHex,
+          source: "verify",
+        });
       } catch (verifyError) {
         const message = verifyError instanceof Error ? verifyError.message : "Verification failed.";
         setError(message);
-        toast.error(message);
+        toast.error(message, { id: `${TOAST_NAMESPACE}:drop-error` });
       }
     },
-    [runVerification]
+    [initialHash, initialHashInvalid, normalizedInitialHash, runVerification]
   );
 
   useEffect(() => {
     if (!initialHash || initialHashInvalid) {
+      qrVerificationGuardRef.current = "";
       return;
     }
 
-    const timerId = setTimeout(() => {
-      void runVerification(normalizedInitialHash, "From QR Link");
-    }, 0);
+    const qrKey = normalizedInitialHash.toLowerCase();
+    if (qrVerificationGuardRef.current === qrKey) {
+      return;
+    }
 
-    return () => clearTimeout(timerId);
+    qrVerificationGuardRef.current = qrKey;
+    void runVerification(normalizedInitialHash, "From QR Link", { source: "qr" });
   }, [initialHash, initialHashInvalid, normalizedInitialHash, runVerification]);
+
+  useEffect(() => {
+    return () => {
+      activeRunIdRef.current = 0;
+    };
+  }, []);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,

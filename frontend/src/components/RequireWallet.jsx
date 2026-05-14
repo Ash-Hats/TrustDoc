@@ -17,7 +17,7 @@ export default function RequireWallet({ children }) {
       description="Connect your MetaMask wallet on Polygon Amoy from Settings to access this section."
       action={
         <div className="flex flex-wrap gap-2">
-          <Button onClick={() => connectWallet({ requestIfMissing: true, autoSwitch: true })}>
+          <Button onClick={() => connectWallet({ requestIfMissing: true, autoSwitch: false })}>
             <Wallet size={14} />
             Quick Connect
           </Button>

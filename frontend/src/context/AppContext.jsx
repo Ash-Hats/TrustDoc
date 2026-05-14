@@ -1,4 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
+/* eslint-disable react-hooks/set-state-in-effect */
 import {
   createContext,
   useCallback,
@@ -27,7 +28,6 @@ import { shortAddress } from "../utils/format";
 import {
   clearSessionStorage,
   getActivityStorage,
-  getSessionStorage,
   getSettingsStorage,
   getVerificationHistoryStorage,
   setActivityStorage,
@@ -61,7 +61,7 @@ const AppContext = createContext(null);
 
 const DEFAULT_SETTINGS = {
   notifications: true,
-  autoConnect: true,
+  autoConnect: false,
   explorerBaseUrl: "https://amoy.polygonscan.com",
   securityMode: "strict",
 };
@@ -76,10 +76,16 @@ const DEFAULT_WALLET = {
 
 const POLL_INTERVAL_MS = 45000;
 const REALTIME_REFRESH_DEBOUNCE_MS = 450;
-const AUTO_CONNECT_EFFECT_GUARD_KEY = "__trustdoc_app_autoconnect__";
-const AUTO_CONNECT_SCOPE_GUARD_KEY = "__trustdoc_app_autoconnect_scope__";
 const MIN_SILENT_REFRESH_GAP_MS = 1200;
 const LOCAL_DOCUMENT_SYNC_COOLDOWN_MS = 2500;
+
+function normalizeSettings(nextSettings = {}) {
+  return {
+    ...DEFAULT_SETTINGS,
+    ...(nextSettings || {}),
+    autoConnect: false,
+  };
+}
 
 function rememberSeenEvent(ref, key, maxSize = 400) {
   if (!ref.current) {
@@ -264,7 +270,7 @@ export function AppProvider({ children }) {
   const scopeKey = userId || "public";
   const remoteEnabled = isSupabaseConfigured() && Boolean(session?.accessToken && userId);
 
-  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState(() => normalizeSettings(DEFAULT_SETTINGS));
   const [wallet, setWallet] = useState(DEFAULT_WALLET);
   const [documents, setDocuments] = useState([]);
   const [isDocumentsLoading, setIsDocumentsLoading] = useState(false);
@@ -277,7 +283,6 @@ export function AppProvider({ children }) {
   const [lastRealtimeEventAt, setLastRealtimeEventAt] = useState(0);
   const [syncError, setSyncError] = useState("");
   const [isSyncRefreshPending, setIsSyncRefreshPending] = useState(false);
-  const autoConnectGuard = useRef(false);
   const connectInFlightRef = useRef(null);
   const refreshInFlightRef = useRef(null);
   const lastRefreshRunAtRef = useRef(0);
@@ -285,7 +290,6 @@ export function AppProvider({ children }) {
   const lastUpsertFingerprintRef = useRef("");
   const documentsRef = useRef([]);
   const realtimeRefreshTimerRef = useRef(null);
-  const connectWalletRef = useRef(null);
   const refreshDocumentsRef = useRef(null);
   const refreshWalletSessionsRef = useRef(null);
   const loadRemoteWorkspaceStateRef = useRef(null);
@@ -302,9 +306,9 @@ export function AppProvider({ children }) {
   const verificationFingerprintRef = useRef("");
   const activityFingerprintRef = useRef("");
   const walletSessionsFingerprintRef = useRef("");
+  const previousAuthStateRef = useRef(Boolean(isAuthenticated));
 
   useEffect(() => {
-    autoConnectGuard.current = false;
     refreshInFlightRef.current = null;
     lastRefreshRunAtRef.current = 0;
     lastLocalDocumentUpsertAtRef.current = 0;
@@ -313,13 +317,6 @@ export function AppProvider({ children }) {
     verificationFingerprintRef.current = "";
     activityFingerprintRef.current = "";
     walletSessionsFingerprintRef.current = "";
-    if (typeof window !== "undefined") {
-      const previousAutoConnectScope = window[AUTO_CONNECT_SCOPE_GUARD_KEY];
-      if (previousAutoConnectScope !== scopeKey) {
-        window[AUTO_CONNECT_EFFECT_GUARD_KEY] = false;
-        window[AUTO_CONNECT_SCOPE_GUARD_KEY] = scopeKey;
-      }
-    }
     seenDocumentEventsRef.current = new Set();
   }, [scopeKey]);
 
@@ -474,10 +471,10 @@ export function AppProvider({ children }) {
 
   const updateSettings = useCallback(
     async (patch) => {
-      const next = {
+      const next = normalizeSettings({
         ...settings,
         ...patch,
-      };
+      });
       setSettings(next);
       await persistSettings(next);
     },
@@ -617,6 +614,7 @@ export function AppProvider({ children }) {
       ...DEFAULT_WALLET,
       status: "disconnected",
     });
+    setShowWrongNetworkModal(false);
     setDocuments([]);
     documentsRef.current = [];
     lastUpsertFingerprintRef.current = "";
@@ -800,23 +798,24 @@ export function AppProvider({ children }) {
   );
 
   const connectWallet = useCallback(
-    async ({ requestIfMissing = true, autoSwitch = true, silent = false } = {}) => {
+    async ({ requestIfMissing = true, silent = false } = {}) => {
       if (connectInFlightRef.current) {
         return connectInFlightRef.current;
       }
 
       const connectPromise = (async () => {
         setWallet((previous) => ({ ...previous, isConnecting: true }));
+        const allowAutoSwitch = false;
         console.debug("[trustdoc:wallet] connectWallet start", {
           requestIfMissing,
-          autoSwitch,
+          autoSwitch: allowAutoSwitch,
           silent,
         });
 
         try {
           const walletSnapshot = await connectWalletWithManager({
             requestIfMissing,
-            autoSwitch,
+            autoSwitch: allowAutoSwitch,
           });
           const account = walletSnapshot.account;
 
@@ -1126,10 +1125,6 @@ export function AppProvider({ children }) {
   }, [isAuthenticated, profile?.wallet_address, remoteEnabled, session?.accessToken, userId]);
 
   useEffect(() => {
-    connectWalletRef.current = connectWallet;
-  }, [connectWallet]);
-
-  useEffect(() => {
     refreshDocumentsRef.current = refreshDocuments;
   }, [refreshDocuments]);
 
@@ -1245,11 +1240,11 @@ export function AppProvider({ children }) {
     const localSettings = getSettingsStorage(scopeKey);
     const storedVerifications = getVerificationHistoryStorage(scopeKey);
     const storedActivity = getActivityStorage(scopeKey);
-    setSettings({
-      ...DEFAULT_SETTINGS,
-      ...(localSettings || {}),
-      ...(profile?.settings || {}),
-    });
+    setSettings(
+      normalizeSettings({
+        ...(localSettings || {}),
+      })
+    );
     setVerificationHistory(storedVerifications);
     setActivity(storedActivity);
     verificationFingerprintRef.current = JSON.stringify(storedVerifications);
@@ -1271,11 +1266,12 @@ export function AppProvider({ children }) {
       return;
     }
 
-    setSettings((current) => ({
-      ...DEFAULT_SETTINGS,
-      ...current,
-      ...profile.settings,
-    }));
+    setSettings((current) =>
+      normalizeSettings({
+        ...current,
+        ...profile.settings,
+      })
+    );
   }, [profile?.settings]);
 
   useEffect(() => {
@@ -1307,31 +1303,16 @@ export function AppProvider({ children }) {
   }, [isAuthenticated, userId, wallet.account, wallet.status]);
 
   useEffect(() => {
-    const currentSession = getSessionStorage();
-    if (!settings.autoConnect || currentSession?.manualDisconnect) {
-      return;
+    const wasAuthenticated = previousAuthStateRef.current;
+
+    if (wasAuthenticated && !isAuthenticated) {
+      disconnectWalletProviderSession();
+      clearSessionStorage();
+      setDisconnectedState();
     }
 
-    const browserWindow = typeof window === "undefined" ? null : window;
-    if (autoConnectGuard.current || browserWindow?.[AUTO_CONNECT_EFFECT_GUARD_KEY]) {
-      return;
-    }
-
-    autoConnectGuard.current = true;
-    if (browserWindow) {
-      browserWindow[AUTO_CONNECT_EFFECT_GUARD_KEY] = true;
-    }
-
-    const timer = setTimeout(() => {
-      void connectWalletRef.current?.({
-        requestIfMissing: false,
-        autoSwitch: false,
-        silent: true,
-      });
-    }, 0);
-
-    return () => clearTimeout(timer);
-  }, [scopeKey, settings.autoConnect]);
+    previousAuthStateRef.current = Boolean(isAuthenticated);
+  }, [isAuthenticated, setDisconnectedState]);
 
   useEffect(() => {
     const unsubscribe = subscribeWalletEvents({

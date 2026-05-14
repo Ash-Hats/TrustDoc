@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Toaster } from "react-hot-toast";
 import AppLayout from "./layouts/AppLayout";
+import PublicLayout from "./layouts/PublicLayout";
 import RequireWallet from "./components/RequireWallet";
 import ProtectedRoute from "./components/ProtectedRoute";
 import PublicOnlyRoute from "./components/PublicOnlyRoute";
@@ -66,9 +67,14 @@ function App() {
           <Route path="/auth/callback" element={<AuthCallback />} />
           <Route path="/setup/identity" element={<IdentitySetup />} />
 
-          <Route element={<AppLayout />}>
-            <Route path="/verify" element={<Verify />} />
-          </Route>
+          <Route
+            path="/verify"
+            element={
+              <PublicLayout>
+                <Verify />
+              </PublicLayout>
+            }
+          />
 
           <Route
             element={

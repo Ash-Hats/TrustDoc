@@ -166,7 +166,7 @@ export default function Profile() {
 
           <Button
             variant="secondary"
-            onClick={() => connectWallet({ requestIfMissing: true, autoSwitch: true })}
+            onClick={() => connectWallet({ requestIfMissing: true, autoSwitch: false })}
           >
             <Wallet size={14} />
             Connect / Switch Wallet

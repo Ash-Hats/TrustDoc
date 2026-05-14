@@ -20,7 +20,7 @@ export default function Verify() {
               Verify Document
             </h2>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-gray-400">
-              Validate hash integrity, issuer authenticity, signature proof, and blockchain timeline with one drag-and-drop flow.
+              Public verification endpoint. No login or wallet connection is required for QR and hash checks.
             </p>
           </div>
         </div>

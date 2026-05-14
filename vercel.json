@@ -26,13 +26,22 @@
       "description": "Application origin URL",
       "required": true
     },
-    "VITE_PINATA_JWT": {
-      "description": "Pinata JWT token for IPFS",
-      "required": false
+    "VITE_PINATA_UPLOAD_ENDPOINT": {
+      "description": "Upload relay endpoint for Pinata metadata",
+      "required": true,
+      "default": "/api/pinata-upload"
     },
     "VITE_PINATA_GATEWAY": {
       "description": "Pinata IPFS gateway URL",
-      "required": false
+      "required": true
+    },
+    "PINATA_JWT": {
+      "description": "Server-side Pinata JWT used by /api/pinata-upload",
+      "required": true
+    },
+    "PINATA_GATEWAY": {
+      "description": "Server-side Pinata gateway base URL",
+      "required": true
     },
     "VITE_ENV": {
       "description": "Environment (development/production)",
@@ -44,20 +53,15 @@
     }
   },
   "functions": {
-    "frontend/**/*.js": {
+    "api/**/*.js": {
       "maxDuration": 60
     }
   },
-  "builds": [
-    {
-      "src": "frontend/package.json",
-      "use": "@vercel/static-build",
-      "config": {
-        "distDir": "frontend/dist"
-      }
-    }
-  ],
   "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/$1"
+    },
     {
       "source": "/(.*)",
       "destination": "/index.html"
