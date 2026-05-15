@@ -342,9 +342,20 @@ export async function upsertDocumentRecords(token, userId, documents = []) {
     return "private";
   };
 
+  const normalizeWorkflowStatus = (value) => {
+    const normalized = String(value || "pending").toLowerCase();
+    if (["draft", "pending", "approved", "rejected", "revoked"].includes(normalized)) {
+      return normalized;
+    }
+    return "pending";
+  };
+
   const payload = documents.map((document) => ({
     ...(document.id ? { id: document.id } : {}),
     user_id: userId,
+    organization_id: document.organizationId || null,
+    uploader_user_id: document.uploaderUserId || userId,
+    subject_user_id: document.subjectUserId || userId,
     hash: document.hash,
     wallet_address: document.owner || "",
     cid: document.cid || "",
@@ -355,6 +366,14 @@ export async function upsertDocumentRecords(token, userId, documents = []) {
     is_revoked: Boolean(document.revoked),
     timestamp: Number(document.timestamp || 0),
     block_timestamp: Number(document.blockTimestamp || 0),
+    workflow_status: normalizeWorkflowStatus(document.workflowStatus),
+    rejection_reason: document.rejectionReason || "",
+    submitted_at: document.submittedAt || null,
+    reviewed_at: document.reviewedAt || null,
+    reviewed_by: document.reviewedBy || null,
+    approved_signature_id: document.approvedSignatureId || null,
+    current_version: Number(document.currentVersion || 1),
+    verification_hash: document.verificationHash || "",
     privacy_level: normalizePrivacyLevel(document.privacyLevel),
     description: document.description || "",
     file_name: document.fileName || "",
@@ -719,6 +738,192 @@ export async function updateProfileStep(token, userId, stepData) {
     query: {
       user_id: `eq.${userId}`,
     },
+  });
+
+  return rows?.[0] || null;
+}
+
+// ============================================================================
+// DOCUMENT EDITING & VERSIONING - PRODUCTION
+// ============================================================================
+
+/**
+ * Update document metadata
+ * WARNING: Hash, txHash, and signature CANNOT be modified
+ * Only editable fields: title, description, tags, privacyLevel
+ */
+export async function updateDocument(token, documentId, userId, editData) {
+  // Ensure immutable fields are never included
+  const sanitizedData = {};
+
+  if (editData.title !== undefined) sanitizedData.title = editData.title;
+  if (editData.description !== undefined) sanitizedData.description = editData.description;
+  if (editData.tags !== undefined) sanitizedData.tags = editData.tags;
+  if (editData.privacyLevel !== undefined) {
+    sanitizedData.privacy_level = editData.privacyLevel;
+  }
+
+  // CRITICAL: Prevent hash modification
+  if (editData.hash || editData.txHash || editData.signature) {
+    throw new Error('Hash, transaction, and signature data cannot be modified');
+  }
+
+  sanitizedData.updated_at = new Date().toISOString();
+
+  const rows = await restPatch("documents", {
+    token,
+    body: sanitizedData,
+    query: {
+      id: `eq.${documentId}`,
+      user_id: `eq.${userId}`,
+    },
+  });
+
+  return rows?.[0] || null;
+}
+
+/**
+ * Get document version history
+ */
+export async function getDocumentVersions(token, documentId) {
+  return restSelect("document_versions", {
+    token,
+    query: {
+      select: "*",
+      document_id: `eq.${documentId}`,
+      order: "version.desc",
+    },
+  });
+}
+
+/**
+ * Create a new document version record (called when metadata is edited)
+ */
+export async function createDocumentVersion(token, documentId, versionData) {
+  const rows = await restInsert("document_versions", {
+    token,
+    body: [
+      {
+        document_id: documentId,
+        version: versionData.version,
+        title: versionData.title,
+        description: versionData.description,
+        tags: versionData.tags || [],
+        privacy_level: versionData.privacy_level,
+        change_reason: versionData.change_reason || '',
+        previous_values: versionData.previous_values || {},
+      },
+    ],
+  });
+
+  return rows?.[0] || null;
+}
+
+/**
+ * Soft delete a document
+ */
+export async function softDeleteDocument(token, documentId, userId) {
+  const rows = await restPatch("documents", {
+    token,
+    body: {
+      is_deleted: true,
+      updated_at: new Date().toISOString(),
+    },
+    query: {
+      id: `eq.${documentId}`,
+      user_id: `eq.${userId}`,
+    },
+  });
+
+  return rows?.[0] || null;
+}
+
+/**
+ * Restore a soft-deleted document
+ */
+export async function restoreDocument(token, documentId, userId) {
+  const rows = await restPatch("documents", {
+    token,
+    body: {
+      is_deleted: false,
+      updated_at: new Date().toISOString(),
+    },
+    query: {
+      id: `eq.${documentId}`,
+      user_id: `eq.${userId}`,
+    },
+  });
+
+  return rows?.[0] || null;
+}
+
+/**
+ * Get user role for permission checking
+ */
+export async function getUserRole(token, userId) {
+  const rows = await restSelect("profiles", {
+    token,
+    query: {
+      select: "role",
+      user_id: `eq.${userId}`,
+      limit: 1,
+    },
+  });
+
+  return rows?.[0]?.role || 'user';
+}
+
+/**
+ * Update user role (admin only)
+ */
+export async function updateUserRole(token, userId, newRole) {
+  const rows = await restPatch("profiles", {
+    token,
+    body: {
+      role: newRole,
+      updated_at: new Date().toISOString(),
+    },
+    query: {
+      user_id: `eq.${userId}`,
+    },
+  });
+
+  return rows?.[0] || null;
+}
+
+/**
+ * Get access logs for audit trail
+ */
+export async function getAccessLogs(token, userId, limit = 100) {
+  return restSelect("access_logs", {
+    token,
+    query: {
+      select: "*",
+      user_id: `eq.${userId}`,
+      order: "created_at.desc",
+      limit,
+    },
+  });
+}
+
+/**
+ * Log access attempt for security audit
+ */
+export async function logAccessAttempt(token, userId, accessData) {
+  const rows = await restInsert("access_logs", {
+    token,
+    body: [
+      {
+        user_id: userId,
+        action: accessData.action,
+        resource_type: accessData.resource_type,
+        resource_id: accessData.resource_id,
+        access_granted: Boolean(accessData.access_granted),
+        reason: accessData.reason || '',
+        ip_address: accessData.ip_address || '',
+        user_agent: accessData.user_agent || navigator?.userAgent || '',
+      },
+    ],
   });
 
   return rows?.[0] || null;

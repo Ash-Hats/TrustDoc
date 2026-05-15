@@ -1,37 +1,19 @@
+import {
+  sendJson,
+  setSecurityHeaders,
+  setCorsHeaders,
+  handleOptions,
+  parseJsonBody,
+  enforceTrustedOrigin,
+} from "./_lib/http.js";
+import { enforceRateLimit } from "./_lib/rate-limit.js";
+import { hasPermission, hasRole } from "./_lib/rbac.js";
+import { requireActor, requestContext } from "./_lib/endpoint.js";
+import { writeAuditLog } from "./_lib/audit.js";
+
 const PINATA_URL = "https://api.pinata.cloud/pinning/pinJSONToIPFS";
-const RATE_LIMIT_WINDOW_MS = 60_000;
-const RATE_LIMIT_MAX_REQUESTS = 30;
 const MAX_METADATA_BYTES = 200_000;
 const MAX_NAME_LENGTH = 140;
-
-const rateBuckets = globalThis.__trustdocPinataRateBuckets || new Map();
-globalThis.__trustdocPinataRateBuckets = rateBuckets;
-
-function sendJson(response, status, payload) {
-  response.status(status).json(payload);
-}
-
-function getHeaderValue(input) {
-  if (Array.isArray(input)) {
-    return String(input[0] || "");
-  }
-
-  return String(input || "");
-}
-
-function getClientIp(request) {
-  const forwardedFor = getHeaderValue(request.headers["x-forwarded-for"]);
-  if (forwardedFor) {
-    return forwardedFor.split(",")[0].trim();
-  }
-
-  const realIp = getHeaderValue(request.headers["x-real-ip"]);
-  if (realIp) {
-    return realIp.trim();
-  }
-
-  return "unknown";
-}
 
 function sanitizeName(value) {
   return String(value || "trustdoc-metadata.json")
@@ -49,11 +31,9 @@ function validateAndNormalizeBody(rawBody) {
 
   const name = sanitizeName(body?.name);
   const serializedMetadata = JSON.stringify(metadata);
-
   if (!serializedMetadata || serializedMetadata === "{}") {
     throw new Error("Metadata cannot be empty.");
   }
-
   if (serializedMetadata.length > MAX_METADATA_BYTES) {
     throw new Error("Metadata payload is too large.");
   }
@@ -64,39 +44,52 @@ function validateAndNormalizeBody(rawBody) {
   };
 }
 
-function enforceRateLimit(clientIp) {
-  const now = Date.now();
-  const bucket = rateBuckets.get(clientIp);
-
-  if (!bucket || now - bucket.startedAt > RATE_LIMIT_WINDOW_MS) {
-    rateBuckets.set(clientIp, { startedAt: now, count: 1 });
-    return true;
-  }
-
-  if (bucket.count >= RATE_LIMIT_MAX_REQUESTS) {
-    return false;
-  }
-
-  bucket.count += 1;
-  return true;
-}
-
 function buildGatewayUrl(cid) {
   const gateway = String(process.env.PINATA_GATEWAY || "").trim();
   if (!gateway || !cid) {
     return "";
   }
-
   return `${gateway.replace(/\/+$/, "")}/ipfs/${cid}`;
 }
 
 export default async function handler(request, response) {
-  response.setHeader("Cache-Control", "no-store");
-  response.setHeader("X-Content-Type-Options", "nosniff");
+  if (handleOptions(request, response, ["POST", "OPTIONS"])) {
+    return;
+  }
+
+  setCorsHeaders(request, response, ["POST", "OPTIONS"]);
+  setSecurityHeaders(response);
 
   if (request.method !== "POST") {
-    response.setHeader("Allow", "POST");
+    response.setHeader("Allow", "POST, OPTIONS");
     return sendJson(response, 405, { error: "Method Not Allowed" });
+  }
+
+  if (!enforceTrustedOrigin(request)) {
+    return sendJson(response, 403, { error: "Request origin not allowed." });
+  }
+
+  const context = requestContext(request);
+  if (!enforceRateLimit(`pinata:${context.ipAddress}`, { windowMs: 60_000, max: 60 })) {
+    return sendJson(response, 429, { error: "Rate limit exceeded. Please retry shortly." });
+  }
+
+  let actor;
+  try {
+    actor = await requireActor(request);
+  } catch (error) {
+    return sendJson(response, 401, { error: error?.message || "Unauthorized." });
+  }
+
+  const organizationId = actor.profile?.organization_id || null;
+  const canUpload =
+    hasRole(actor, "super_admin") ||
+    hasPermission(actor, "documents:create", organizationId) ||
+    hasPermission(actor, "documents:update_pending", organizationId) ||
+    hasPermission(actor, "documents:approve", organizationId);
+
+  if (!canUpload) {
+    return sendJson(response, 403, { error: "Insufficient permissions for metadata upload." });
   }
 
   const jwt = String(process.env.PINATA_JWT || "").trim();
@@ -104,14 +97,10 @@ export default async function handler(request, response) {
     return sendJson(response, 500, { error: "Server is missing PINATA_JWT configuration." });
   }
 
-  const clientIp = getClientIp(request);
-  if (!enforceRateLimit(clientIp)) {
-    return sendJson(response, 429, { error: "Rate limit exceeded. Please retry shortly." });
-  }
-
   let normalizedBody;
   try {
-    normalizedBody = validateAndNormalizeBody(request.body);
+    const body = await parseJsonBody(request);
+    normalizedBody = validateAndNormalizeBody(body);
   } catch (error) {
     return sendJson(response, 400, { error: error?.message || "Invalid request body." });
   }
@@ -124,14 +113,19 @@ export default async function handler(request, response) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        pinataMetadata: { name: normalizedBody.name },
+        pinataMetadata: {
+          name: normalizedBody.name,
+          keyvalues: {
+            trustdoc_user_id: actor.user.id,
+            trustdoc_org_id: organizationId || "",
+          },
+        },
         pinataContent: normalizedBody.metadata,
       }),
     });
 
     const rawText = await upstreamResponse.text();
     let upstreamData = {};
-
     if (rawText) {
       try {
         upstreamData = JSON.parse(rawText);
@@ -141,6 +135,19 @@ export default async function handler(request, response) {
     }
 
     if (!upstreamResponse.ok) {
+      await writeAuditLog({
+        actor,
+        action: "pinata_upload_failed",
+        resourceType: "pinata",
+        resourceId: normalizedBody.name,
+        status: "failed",
+        metadata: { upstream: upstreamData },
+        ipAddress: context.ipAddress,
+        userAgent: context.userAgent,
+        organizationId,
+        errorMessage: upstreamData?.error?.reason || upstreamData?.message || "Pinata upload failed.",
+      }).catch(() => null);
+
       return sendJson(response, 502, {
         error: upstreamData?.error?.reason || upstreamData?.message || "Pinata upload failed.",
       });
@@ -157,14 +164,40 @@ export default async function handler(request, response) {
       return sendJson(response, 502, { error: "Pinata response did not include CID." });
     }
 
+    await writeAuditLog({
+      actor,
+      action: "pinata_upload_success",
+      resourceType: "pinata",
+      resourceId: cid,
+      status: "success",
+      metadata: { name: normalizedBody.name, cid },
+      ipAddress: context.ipAddress,
+      userAgent: context.userAgent,
+      organizationId,
+    }).catch(() => null);
+
     return sendJson(response, 200, {
       cid,
       IpfsHash: cid,
       gatewayUrl: buildGatewayUrl(cid),
     });
   } catch (error) {
+    await writeAuditLog({
+      actor,
+      action: "pinata_upload_exception",
+      resourceType: "pinata",
+      resourceId: normalizedBody?.name || "",
+      status: "failed",
+      metadata: {},
+      ipAddress: context.ipAddress,
+      userAgent: context.userAgent,
+      organizationId,
+      errorMessage: error?.message || "Unexpected upload relay failure.",
+    }).catch(() => null);
+
     return sendJson(response, 500, {
       error: error?.message || "Unexpected upload relay failure.",
     });
   }
 }
+

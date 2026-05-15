@@ -30,6 +30,7 @@ import {
   updateCurrentUser,
   upsertProfile,
 } from "../services/supabaseService";
+import { getPortalBootstrap } from "../services/backendApiService";
 import { getCurrentAddress, getSigner } from "../services/walletManager";
 
 const AuthContext = createContext(null);
@@ -119,7 +120,13 @@ export function AuthProvider({ children }) {
   const [session, setSession] = useState(() => mapSessionPayload(getAuthSessionStorage()));
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
+  const [portalContext, setPortalContext] = useState({
+    actor: null,
+    organizations: [],
+    activePortal: "user",
+  });
   const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [isRoleLoading, setIsRoleLoading] = useState(false);
   const [authError, setAuthError] = useState("");
   const supabaseReady = isSupabaseConfigured();
   const setupGuide = useMemo(() => getSupabaseSetupGuide(), []);
@@ -129,6 +136,38 @@ export function AuthProvider({ children }) {
     setSession(null);
     setUser(null);
     setProfile(null);
+    setPortalContext({
+      actor: null,
+      organizations: [],
+      activePortal: "user",
+    });
+  }, []);
+
+  const hydratePortalContext = useCallback(async (nextSession, portal = "user") => {
+    if (!nextSession?.accessToken) {
+      return null;
+    }
+
+    setIsRoleLoading(true);
+    try {
+      const payload = await getPortalBootstrap(nextSession.accessToken, portal);
+      setPortalContext({
+        actor: payload?.actor || null,
+        organizations: payload?.organizations || [],
+        activePortal: payload?.activePortal || portal,
+      });
+
+      if (payload?.actor?.profile) {
+        setProfile((current) => ({
+          ...(current || {}),
+          ...(payload.actor.profile || {}),
+        }));
+      }
+
+      return payload;
+    } finally {
+      setIsRoleLoading(false);
+    }
   }, []);
 
   const ensureProfile = useCallback(
@@ -179,7 +218,7 @@ export function AuthProvider({ children }) {
   );
 
   const signIn = useCallback(
-    async ({ email, password }) => {
+    async ({ email, password, portal = "user" }) => {
       if (!supabaseReady) {
         throw new Error("Supabase is not configured.");
       }
@@ -194,12 +233,19 @@ export function AuthProvider({ children }) {
         }
 
         const authUser = await hydrateFromSession(normalized);
+        try {
+          await hydratePortalContext(normalized, portal);
+        } catch (error) {
+          await signOutSession(normalized.accessToken).catch(() => null);
+          clearAuthState();
+          throw error;
+        }
         return authUser;
       } finally {
         setIsAuthLoading(false);
       }
     },
-    [hydrateFromSession, supabaseReady]
+    [clearAuthState, hydrateFromSession, hydratePortalContext, supabaseReady]
   );
 
   const signUp = useCallback(
@@ -220,6 +266,7 @@ export function AuthProvider({ children }) {
           const normalized = normalizeAuthSession(payload.session);
           if (normalized) {
             await hydrateFromSession(normalized);
+            await hydratePortalContext(normalized, "user").catch(() => null);
           }
         }
 
@@ -231,7 +278,7 @@ export function AuthProvider({ children }) {
         setIsAuthLoading(false);
       }
     },
-    [hydrateFromSession, supabaseReady]
+    [hydrateFromSession, hydratePortalContext, supabaseReady]
   );
 
   const signInWithGoogle = useCallback(
@@ -251,7 +298,7 @@ export function AuthProvider({ children }) {
   );
 
   const completeOAuthFromHash = useCallback(
-    async (hashValue) => {
+    async (hashValue, portal = "user") => {
       const parsed = parseSessionFromUrlHash(hashValue);
       if (!parsed) {
         throw new Error("No OAuth session found in callback URL.");
@@ -260,11 +307,12 @@ export function AuthProvider({ children }) {
       setIsAuthLoading(true);
       try {
         await hydrateFromSession(parsed);
+        await hydratePortalContext(parsed, portal).catch(() => null);
       } finally {
         setIsAuthLoading(false);
       }
     },
-    [hydrateFromSession]
+    [hydrateFromSession, hydratePortalContext]
   );
 
   const refreshAuthSession = useCallback(async () => {
@@ -280,8 +328,9 @@ export function AuthProvider({ children }) {
     }
 
     await hydrateFromSession(normalized);
+    await hydratePortalContext(normalized, portalContext.activePortal || "user").catch(() => null);
     return normalized;
-  }, [hydrateFromSession, session, supabaseReady]);
+  }, [hydrateFromSession, hydratePortalContext, portalContext.activePortal, session, supabaseReady]);
 
   const logout = useCallback(async () => {
     if (session?.accessToken && supabaseReady) {
@@ -363,6 +412,7 @@ export function AuthProvider({ children }) {
       }
 
       const authUser = await hydrateFromSession(normalized);
+      await hydratePortalContext(normalized, "user").catch(() => null);
       if (authUser) {
         await ensureProfile(normalized, authUser, { walletAddress: address });
         await addActivityLog(normalized.accessToken, {
@@ -378,7 +428,7 @@ export function AuthProvider({ children }) {
     } finally {
       setIsAuthLoading(false);
     }
-  }, [ensureProfile, hydrateFromSession, supabaseReady]);
+  }, [ensureProfile, hydrateFromSession, hydratePortalContext, supabaseReady]);
 
   const deleteAccount = useCallback(async () => {
     if (!user || !session?.accessToken) {
@@ -417,6 +467,7 @@ export function AuthProvider({ children }) {
 
         if (next) {
           await hydrateFromSession(next);
+          await hydratePortalContext(next, "user").catch(() => null);
         } else {
           clearAuthState();
         }
@@ -437,7 +488,7 @@ export function AuthProvider({ children }) {
     return () => {
       isMounted = false;
     };
-  }, [clearAuthState, hydrateFromSession, supabaseReady]);
+  }, [clearAuthState, hydrateFromSession, hydratePortalContext, supabaseReady]);
 
   useEffect(() => {
     if (!session?.refreshToken || !session?.expiresAt || !supabaseReady) {
@@ -467,21 +518,27 @@ export function AuthProvider({ children }) {
       }
 
       if (!session || stored.accessToken !== session.accessToken) {
-        void hydrateFromSession(stored).catch(() => null);
+        void hydrateFromSession(stored)
+          .then(() => hydratePortalContext(stored, portalContext.activePortal || "user"))
+          .catch(() => null);
       }
     };
 
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [hydrateFromSession, session]);
+  }, [hydrateFromSession, hydratePortalContext, portalContext.activePortal, session]);
 
   const contextValue = useMemo(
     () => ({
       session,
       user,
       profile,
+      actor: portalContext.actor,
+      organizations: portalContext.organizations,
+      activePortal: portalContext.activePortal,
       authError,
       isAuthLoading,
+      isRoleLoading,
       isSupabaseConfigured: supabaseReady,
       setupGuide,
       isAuthenticated: Boolean(user && session?.accessToken),
@@ -498,6 +555,34 @@ export function AuthProvider({ children }) {
       unlinkWallet,
       deleteAccount,
       clearAuthState,
+      refreshPortalContext: (portal = portalContext.activePortal || "user") =>
+        hydratePortalContext(session, portal),
+      hasRole: (roleKey, organizationId = null) => {
+        const assignments = portalContext.actor?.roleAssignments || [];
+        return assignments.some(
+          (entry) =>
+            entry.roleKey === roleKey &&
+            (entry.roleKey === "super_admin" || organizationId == null || entry.organizationId === organizationId)
+        );
+      },
+      hasPermission: (permissionKey, organizationId = null) => {
+        const assignments = portalContext.actor?.roleAssignments || [];
+        if (assignments.some((entry) => entry.roleKey === "super_admin")) {
+          return true;
+        }
+
+        const permissions = portalContext.actor?.permissions || [];
+        return permissions.some(
+          (entry) =>
+            entry.permissionKey === permissionKey &&
+            (organizationId == null || entry.organizationId === organizationId)
+        );
+      },
+      canAccessPortal: (portal) => {
+        const normalized = String(portal || "user").toLowerCase();
+        const allowed = portalContext.actor?.allowedPortals || ["user"];
+        return allowed.includes(normalized);
+      },
     }),
     [
       authError,
@@ -505,8 +590,12 @@ export function AuthProvider({ children }) {
       completeOAuthFromHash,
       deleteAccount,
       isAuthLoading,
+      isRoleLoading,
       linkWallet,
       logout,
+      portalContext.activePortal,
+      portalContext.actor,
+      portalContext.organizations,
       profile,
       refreshAuthSession,
       sendResetPasswordEmail,
@@ -520,6 +609,7 @@ export function AuthProvider({ children }) {
       unlinkWallet,
       updateAuthProfile,
       user,
+      hydratePortalContext,
     ]
   );
 

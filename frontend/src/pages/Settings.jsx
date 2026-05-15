@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   AlertTriangle,
   Bell,
@@ -97,12 +97,9 @@ export default function Settings() {
   const [isSwitchingNetwork, setIsSwitchingNetwork] = useState(false);
   const [isSyncingWallet, setIsSyncingWallet] = useState(false);
   const [networkHint, setNetworkHint] = useState("");
-  const [displayName, setDisplayName] = useState("");
+  const [displayNameDraft, setDisplayNameDraft] = useState(null);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
-
-  useEffect(() => {
-    setDisplayName(profile?.display_name || "");
-  }, [profile?.display_name]);
+  const displayName = displayNameDraft ?? (profile?.display_name || "");
 
   const sessionExpiryLabel = session?.expiresAt
     ? new Date(session.expiresAt).toLocaleString()
@@ -214,6 +211,7 @@ export default function Settings() {
       await updateAuthProfile({
         displayName: safeName,
       });
+      setDisplayNameDraft(null);
       toast.success("Profile updated.");
     } catch (error) {
       toast.error(error?.message || "Failed to update profile.");
@@ -242,7 +240,7 @@ export default function Settings() {
             <input
               type="text"
               value={displayName}
-              onChange={(event) => setDisplayName(event.target.value)}
+              onChange={(event) => setDisplayNameDraft(event.target.value)}
               className="w-full rounded-xl border border-white/15 bg-white/[0.04] px-3 py-2.5 text-sm text-gray-100 outline-none transition focus:border-violet-300/70 focus:ring-2 focus:ring-violet-400/20"
               placeholder="Your display name"
             />

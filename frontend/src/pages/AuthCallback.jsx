@@ -14,8 +14,13 @@ export default function AuthCallback() {
 
     async function finishAuth() {
       const nextPath = searchParams.get("next") || "/dashboard";
+      const portal = nextPath.startsWith("/superadmin")
+        ? "superadmin"
+        : nextPath.startsWith("/admin")
+          ? "admin"
+          : "user";
       try {
-        await completeOAuthFromHash(window.location.hash);
+        await completeOAuthFromHash(window.location.hash, portal);
         if (!active) {
           return;
         }

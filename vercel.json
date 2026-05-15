@@ -10,8 +10,20 @@
       "description": "Supabase project URL",
       "required": true
     },
+    "SUPABASE_URL": {
+      "description": "Server-side Supabase project URL",
+      "required": true
+    },
     "VITE_SUPABASE_ANON_KEY": {
       "description": "Supabase anonymous key",
+      "required": true
+    },
+    "SUPABASE_ANON_KEY": {
+      "description": "Server-side Supabase anonymous key",
+      "required": true
+    },
+    "SUPABASE_SERVICE_ROLE_KEY": {
+      "description": "Supabase service role key for privileged backend RBAC APIs",
       "required": true
     },
     "VITE_AMOY_RPC_URL": {
@@ -25,6 +37,14 @@
     "VITE_APP_ORIGIN": {
       "description": "Application origin URL",
       "required": true
+    },
+    "APP_ORIGIN": {
+      "description": "Server-side application origin URL",
+      "required": true
+    },
+    "TRUSTDOC_ALLOWED_ORIGINS": {
+      "description": "Comma-separated trusted origins for API CSRF/origin checks",
+      "default": "http://localhost:5173,http://127.0.0.1:5173"
     },
     "VITE_PINATA_UPLOAD_ENDPOINT": {
       "description": "Upload relay endpoint for Pinata metadata",

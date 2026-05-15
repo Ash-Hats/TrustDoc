@@ -1,4 +1,5 @@
 import {
+  Activity,
   BarChart3,
   CheckCircle,
   FilePlus,
@@ -6,17 +7,39 @@ import {
   Home,
   Menu,
   UserRound,
+  Users,
+  Building2,
+  ClipboardCheck,
   Settings,
   X,
 } from "lucide-react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
+import { useMemo } from "react";
 
-const NAV_ITEMS = [
+const USER_NAV_ITEMS = [
   { to: "/dashboard", label: "Dashboard", icon: Home },
   { to: "/register-document", label: "Register", icon: FilePlus },
   { to: "/verify", label: "Verify", icon: CheckCircle },
   { to: "/my-documents", label: "My Documents", icon: FolderOpen },
   { to: "/analytics", label: "Analytics", icon: BarChart3 },
+  { to: "/profile", label: "Profile", icon: UserRound },
+  { to: "/settings", label: "Settings", icon: Settings },
+];
+
+const ADMIN_NAV_ITEMS = [
+  { to: "/admin", label: "Admin Dashboard", icon: Home },
+  { to: "/admin/approvals", label: "Approvals", icon: ClipboardCheck },
+  { to: "/admin/users", label: "Users", icon: Users },
+  { to: "/admin/audit", label: "Audit Logs", icon: Activity },
+  { to: "/profile", label: "Profile", icon: UserRound },
+  { to: "/settings", label: "Settings", icon: Settings },
+];
+
+const SUPER_ADMIN_NAV_ITEMS = [
+  { to: "/superadmin", label: "Super Dashboard", icon: Home },
+  { to: "/superadmin/organizations", label: "Organizations", icon: Building2 },
+  { to: "/admin/users", label: "User Controls", icon: Users },
+  { to: "/admin/audit", label: "Global Logs", icon: Activity },
   { to: "/profile", label: "Profile", icon: UserRound },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
@@ -28,6 +51,17 @@ export default function Sidebar({
   onOpenMobileMenu,
   onCloseMobileMenu,
 }) {
+  const location = useLocation();
+  const navItems = useMemo(() => {
+    if (location.pathname.startsWith("/superadmin")) {
+      return SUPER_ADMIN_NAV_ITEMS;
+    }
+    if (location.pathname.startsWith("/admin")) {
+      return ADMIN_NAV_ITEMS;
+    }
+    return USER_NAV_ITEMS;
+  }, [location.pathname]);
+
   return (
     <>
       {isMobileOpen ? (
@@ -78,7 +112,7 @@ export default function Sidebar({
         </div>
 
         <nav className="flex-1 space-y-2 overflow-y-auto px-3 py-5">
-          {NAV_ITEMS.map((item) => {
+          {navItems.map((item) => {
             const Icon = item.icon;
 
             return (

@@ -17,10 +17,18 @@ const Analytics = lazy(() => import("./pages/Analytics"));
 const Settings = lazy(() => import("./pages/Settings"));
 const Profile = lazy(() => import("./pages/Profile"));
 const Login = lazy(() => import("./pages/Login"));
+const AdminLogin = lazy(() => import("./pages/AdminLogin"));
+const SuperAdminLogin = lazy(() => import("./pages/SuperAdminLogin"));
 const AuthRegister = lazy(() => import("./pages/AuthRegister"));
 const ForgotPassword = lazy(() => import("./pages/ForgotPassword"));
 const AuthCallback = lazy(() => import("./pages/AuthCallback"));
 const IdentitySetup = lazy(() => import("./pages/IdentitySetup"));
+const AdminDashboard = lazy(() => import("./pages/AdminDashboard"));
+const ApprovalQueue = lazy(() => import("./pages/ApprovalQueue"));
+const UserManagement = lazy(() => import("./pages/UserManagement"));
+const AuditLogs = lazy(() => import("./pages/AuditLogs"));
+const SuperAdminDashboard = lazy(() => import("./pages/SuperAdminDashboard"));
+const OrganizationManagement = lazy(() => import("./pages/OrganizationManagement"));
 
 function PageFallback() {
   return (
@@ -46,6 +54,22 @@ function App() {
             element={
               <PublicOnlyRoute>
                 <Login />
+              </PublicOnlyRoute>
+            }
+          />
+          <Route
+            path="/admin/login"
+            element={
+              <PublicOnlyRoute>
+                <AdminLogin />
+              </PublicOnlyRoute>
+            }
+          />
+          <Route
+            path="/superadmin/login"
+            element={
+              <PublicOnlyRoute>
+                <SuperAdminLogin />
               </PublicOnlyRoute>
             }
           />
@@ -100,6 +124,30 @@ function App() {
             <Route path="/settings" element={<Settings />} />
             <Route path="/profile" element={<Profile />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          </Route>
+
+          <Route
+            element={
+              <ProtectedRoute requiredPortal="admin" requireSetup={false}>
+                <AppLayout />
+              </ProtectedRoute>
+            }
+          >
+            <Route path="/admin" element={<AdminDashboard />} />
+            <Route path="/admin/approvals" element={<ApprovalQueue />} />
+            <Route path="/admin/users" element={<UserManagement />} />
+            <Route path="/admin/audit" element={<AuditLogs />} />
+          </Route>
+
+          <Route
+            element={
+              <ProtectedRoute requiredPortal="superadmin" requireSetup={false}>
+                <AppLayout />
+              </ProtectedRoute>
+            }
+          >
+            <Route path="/superadmin" element={<SuperAdminDashboard />} />
+            <Route path="/superadmin/organizations" element={<OrganizationManagement />} />
           </Route>
         </Routes>
       </Suspense>

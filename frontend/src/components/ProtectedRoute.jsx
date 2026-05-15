@@ -13,11 +13,26 @@ function AuthLoadingState() {
   );
 }
 
-export default function ProtectedRoute({ children }) {
+export default function ProtectedRoute({
+  children,
+  requiredPortal = "user",
+  requiredRoles = [],
+  requiredPermissions = [],
+  requireSetup = true,
+}) {
   const location = useLocation();
-  const { isAuthenticated, isAuthLoading, isSupabaseConfigured, profile } = useAuth();
+  const {
+    isAuthenticated,
+    isAuthLoading,
+    isRoleLoading,
+    isSupabaseConfigured,
+    profile,
+    canAccessPortal,
+    hasRole,
+    hasPermission,
+  } = useAuth();
 
-  if (isAuthLoading) {
+  if (isAuthLoading || isRoleLoading) {
     return <AuthLoadingState />;
   }
 
@@ -27,11 +42,35 @@ export default function ProtectedRoute({ children }) {
 
   if (!isAuthenticated) {
     const next = encodeURIComponent(`${location.pathname}${location.search}`);
-    return <Navigate to={`/login?next=${next}`} replace />;
+    const loginBase =
+      requiredPortal === "superadmin"
+        ? "/superadmin/login"
+        : requiredPortal === "admin"
+          ? "/admin/login"
+          : "/login";
+    return <Navigate to={`${loginBase}?next=${next}`} replace />;
+  }
+
+  if (!canAccessPortal(requiredPortal)) {
+    if (requiredPortal === "superadmin") {
+      return <Navigate to="/superadmin/login" replace />;
+    }
+    if (requiredPortal === "admin") {
+      return <Navigate to="/admin/login" replace />;
+    }
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  if (requiredRoles.length && !requiredRoles.some((roleKey) => hasRole(roleKey))) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  if (requiredPermissions.length && !requiredPermissions.every((permission) => hasPermission(permission))) {
+    return <Navigate to="/dashboard" replace />;
   }
 
   // Gate setup completion for dashboard and authenticated routes
-  if (!profile?.setup_completed) {
+  if (requireSetup && !profile?.setup_completed) {
     return <Navigate to="/setup/identity" replace />;
   }
 

@@ -17,7 +17,9 @@ import { Link } from "react-router-dom";
 import toast from "react-hot-toast";
 import { QRCodeSVG as QRCode } from "qrcode.react";
 import { useAppContext } from "../context/AppContext";
+import { useAuth } from "../context/AuthContext";
 import { downloadJsonFile, fetchMetadata } from "../services/documentService";
+import { getDocumentCertificate } from "../services/backendApiService";
 import { formatTimestamp } from "../utils/format";
 import { buildTxUrl } from "../utils/explorer";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
@@ -41,6 +43,22 @@ import { buildPublicDocumentPath, buildPublicDocumentUrl } from "../utils/public
 const PAGE_SIZE = 8;
 
 function statusBadgeProps(document) {
+  const workflowStatus = String(document?.workflowStatus || "").toLowerCase();
+  if (workflowStatus === "draft") {
+    return { type: "pending", label: "Draft" };
+  }
+  if (workflowStatus === "pending") {
+    return { type: "pending", label: "Pending Review" };
+  }
+  if (workflowStatus === "approved") {
+    return { type: "verified", label: "Approved" };
+  }
+  if (workflowStatus === "rejected") {
+    return { type: "tampered", label: "Rejected" };
+  }
+  if (workflowStatus === "revoked") {
+    return { type: "tampered", label: "Revoked" };
+  }
   if (document.derivedStatus === "pending") {
     return { type: "pending", label: "Pending" };
   }
@@ -87,6 +105,7 @@ export default function MyDocuments() {
     refreshDocuments,
   } =
     useAppContext();
+  const { session } = useAuth();
   const { filters, updateFilters, setPage } = useDocumentFilters();
 
   const [viewMode, setViewMode] = useState("grid");
@@ -225,6 +244,34 @@ export default function MyDocuments() {
     };
 
     downloadJsonFile(proof, `trustdoc-${document.hash.slice(2, 12)}-proof.json`);
+  }
+
+  async function handleDownloadCertificate(doc) {
+    if (!session?.accessToken) {
+      toast.error("Sign in required to download certificates.");
+      return;
+    }
+
+    if (!doc?.id) {
+      toast.error("Certificate is available after document sync.");
+      return;
+    }
+
+    try {
+      const html = await getDocumentCertificate(session.accessToken, doc.id, { format: "html" });
+      const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `trustdoc-${doc.hash.slice(2, 12)}-certificate.html`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(url);
+      toast.success("Certificate downloaded.");
+    } catch (error) {
+      toast.error(error?.message || "Unable to download certificate.");
+    }
   }
 
   function handleOpenAccessEditor(document) {
@@ -433,6 +480,9 @@ export default function MyDocuments() {
                         <Button variant="secondary" className="px-3 py-2 text-xs" onClick={() => handleOpenAccessEditor(doc)}>
                           Access
                         </Button>
+                        <Button variant="secondary" className="px-3 py-2 text-xs" onClick={() => handleDownloadCertificate(doc)}>
+                          Certificate
+                        </Button>
                         <Link to={buildPublicDocumentPath(doc.hash)}>
                           <Button variant="secondary" className="px-3 py-2 text-xs">
                             <ShieldCheck size={13} />
@@ -500,6 +550,9 @@ export default function MyDocuments() {
                         </Button>
                         <Button variant="secondary" className="px-3 py-2 text-xs" onClick={() => handleExportProof(doc)}>
                           Export Proof
+                        </Button>
+                        <Button variant="secondary" className="px-3 py-2 text-xs" onClick={() => handleDownloadCertificate(doc)}>
+                          Certificate
                         </Button>
                         <Link to={buildPublicDocumentPath(doc.hash)}>
                           <Button variant="secondary" className="px-3 py-2 text-xs">

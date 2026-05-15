@@ -1,10 +1,11 @@
-import { Navigate, useSearchParams } from "react-router-dom";
+import { Navigate, useLocation, useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import Card from "./ui/Card";
 
 export default function PublicOnlyRoute({ children }) {
+  const location = useLocation();
   const [searchParams] = useSearchParams();
-  const { isAuthenticated, isAuthLoading } = useAuth();
+  const { isAuthenticated, isAuthLoading, activePortal } = useAuth();
 
   if (isAuthLoading) {
     return (
@@ -17,7 +18,13 @@ export default function PublicOnlyRoute({ children }) {
 
   if (isAuthenticated) {
     const next = searchParams.get("next");
-    return <Navigate to={next || "/dashboard"} replace />;
+    const fallback =
+      location.pathname.startsWith("/superadmin") || activePortal === "superadmin"
+        ? "/superadmin"
+        : location.pathname.startsWith("/admin") || activePortal === "admin"
+          ? "/admin"
+          : "/dashboard";
+    return <Navigate to={next || fallback} replace />;
   }
 
   return children;

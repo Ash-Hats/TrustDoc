@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import { Check, Link2, Save, ShieldCheck, UserRound, Wallet } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
@@ -17,7 +17,7 @@ export default function Profile() {
     unlinkWallet,
   } = useAuth();
   const { wallet, connectWallet } = useAppContext();
-  const [displayName, setDisplayName] = useState("");
+  const [displayNameDraft, setDisplayNameDraft] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isWalletSyncing, setIsWalletSyncing] = useState(false);
 
@@ -25,10 +25,7 @@ export default function Profile() {
     () => profile?.wallet_address || wallet.account || "",
     [profile?.wallet_address, wallet.account]
   );
-
-  useEffect(() => {
-    setDisplayName(profile?.display_name || "");
-  }, [profile?.display_name]);
+  const displayName = displayNameDraft ?? (profile?.display_name || "");
 
   async function handleSaveProfile() {
     if (isSaving) {
@@ -43,6 +40,7 @@ export default function Profile() {
     setIsSaving(true);
     try {
       await updateAuthProfile({ displayName: safeName });
+      setDisplayNameDraft(null);
       toast.success("Profile updated.");
     } catch (error) {
       toast.error(error?.message || "Failed to update profile.");
@@ -114,7 +112,7 @@ export default function Profile() {
               <UserRound size={15} className="text-gray-400" />
               <input
                 value={displayName}
-                onChange={(event) => setDisplayName(event.target.value)}
+                onChange={(event) => setDisplayNameDraft(event.target.value)}
                 className="w-full bg-transparent text-sm text-gray-100 outline-none placeholder:text-gray-500"
                 placeholder="Your display name"
               />

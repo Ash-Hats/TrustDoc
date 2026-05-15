@@ -25,7 +25,7 @@ function SetupHint({ setupGuide }) {
   );
 }
 
-export default function Login() {
+export default function Login({ portal = "user" } = {}) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const {
@@ -39,7 +39,9 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
-  const nextPath = useMemo(() => searchParams.get("next") || "/dashboard", [searchParams]);
+  const defaultNextPath =
+    portal === "superadmin" ? "/superadmin" : portal === "admin" ? "/admin" : "/dashboard";
+  const nextPath = useMemo(() => searchParams.get("next") || defaultNextPath, [defaultNextPath, searchParams]);
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -49,7 +51,7 @@ export default function Login() {
 
     setIsLoading(true);
     try {
-      await signIn({ email, password });
+      await signIn({ email, password, portal });
       toast.success("Signed in successfully.");
       navigate(nextPath, { replace: true });
     } catch (error) {
@@ -97,10 +99,12 @@ export default function Login() {
       <Card className="w-full max-w-md space-y-6">
         <div>
           <h2 className="bg-gradient-to-r from-gray-100 via-gray-200 to-gray-300 bg-clip-text text-3xl font-bold text-transparent">
-            Sign In
+            {portal === "superadmin" ? "Super Admin Sign In" : portal === "admin" ? "Admin Sign In" : "Sign In"}
           </h2>
           <p className="mt-2 text-sm text-gray-400">
-            Access your TrustDoc workspace, analytics, and user-scoped records.
+            {portal === "user"
+              ? "Access your TrustDoc workspace, analytics, and user-scoped records."
+              : "Secure portal access with role-enforced session controls."}
           </p>
         </div>
 
@@ -140,33 +144,41 @@ export default function Login() {
           </Button>
         </form>
 
-        <div className="space-y-2">
-          <Button
-            variant="secondary"
-            className="w-full"
-            disabled={isLoading}
-            onClick={handleGoogleSignIn}
-          >
-            Continue with Google
-          </Button>
-          <Button
-            variant="secondary"
-            className="w-full"
-            disabled={isLoading}
-            onClick={handleWalletSignIn}
-          >
-            <Wallet size={15} />
-            Sign In with Wallet
-          </Button>
-        </div>
+        {portal === "user" ? (
+          <div className="space-y-2">
+            <Button
+              variant="secondary"
+              className="w-full"
+              disabled={isLoading}
+              onClick={handleGoogleSignIn}
+            >
+              Continue with Google
+            </Button>
+            <Button
+              variant="secondary"
+              className="w-full"
+              disabled={isLoading}
+              onClick={handleWalletSignIn}
+            >
+              <Wallet size={15} />
+              Sign In with Wallet
+            </Button>
+          </div>
+        ) : null}
 
         <div className="flex items-center justify-between text-xs text-gray-400">
           <Link to={`/forgot-password?next=${encodeURIComponent(nextPath)}`} className="hover:text-cyan-200">
             Forgot password?
           </Link>
-          <Link to={`/register?next=${encodeURIComponent(nextPath)}`} className="hover:text-cyan-200">
-            Create account
-          </Link>
+          {portal === "user" ? (
+            <Link to={`/register?next=${encodeURIComponent(nextPath)}`} className="hover:text-cyan-200">
+              Create account
+            </Link>
+          ) : (
+            <Link to="/login" className="hover:text-cyan-200">
+              User login
+            </Link>
+          )}
         </div>
       </Card>
     </section>

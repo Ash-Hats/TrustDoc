@@ -82,9 +82,14 @@ export function enrichDocuments(documents = [], pendingTransactions = [], verifi
   const index = new Map();
   const enriched = documents.map((doc) => {
     const normalizedHash = normalizeHash(doc?.hash);
+    const workflowStatus = toSearchable(doc?.workflowStatus || "");
 
     let derivedStatus = "verified";
-    if (pendingByHash.has(normalizedHash)) {
+    if (workflowStatus === "draft" || workflowStatus === "pending") {
+      derivedStatus = "pending";
+    } else if (workflowStatus === "rejected" || workflowStatus === "revoked") {
+      derivedStatus = "tampered";
+    } else if (pendingByHash.has(normalizedHash)) {
       derivedStatus = "pending";
     } else if (doc?.revoked) {
       derivedStatus = "tampered";
